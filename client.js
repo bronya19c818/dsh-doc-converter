@@ -1,4 +1,4 @@
-window.__ModuleLoader__.load({id:'dsh-doc-converter',factory(require){
+window.__ModuleLoader__.load({id:"dsh-doc-converter",factory(require){
 const __dshReact=require('react');const module={exports:{}};const exports=module.exports;
 "use strict";
 var __defProp = Object.defineProperty;

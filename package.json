@@ -1,8 +1,26 @@
 {
   "name": "dsh-doc-converter",
-  "version": "0.1.8",
-  "description": "Local deterministic document conversion and versioned styles for DSH",
-  "private": true,
+  "version": "0.1.9",
+  "description": "Local, AI-free document conversion for DeepSeek Harness with versioned DOCX styles",
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "deepseek-harness",
+    "docx",
+    "markdown",
+    "document-conversion",
+    "styles"
+  ],
+  "license": "UNLICENSED",
+  "author": "bronya19c818",
+  "homepage": "https://github.com/bronya19c818/dsh-doc-converter#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bronya19c818/dsh-doc-converter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bronya19c818/dsh-doc-converter/issues"
+  },
   "type": "module",
   "exports": {
     ".": "./index.js",
@@ -10,12 +28,29 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
-  "files": ["index.js", "host/*.js", "client.js", "python/doc_converter/**/*.py", "python/requirements.txt", "scripts/setup-python.mjs", "cordis.patch.yml", "locale/*.json", "icon.svg", "THIRD_PARTY_NOTICES.txt", "README.md"],
+  "files": [
+    "index.js",
+    "host/*.js",
+    "client.js",
+    "python/doc_converter/**/*.py",
+    "python/requirements.txt",
+    "scripts/setup-python.mjs",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "THIRD_PARTY_NOTICES.txt",
+    "README.md"
+  ],
+  "engines": {
+    "dsh": ">=0.2.1-rc.5",
+    "node": ">=22"
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test tests/*.test.mjs",
-    "pack:check": "npm pack --dry-run --json"
+    "pack:check": "npm pack --dry-run --json",
+    "prepublishOnly": "node scripts/verify-package.mjs"
   },
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },

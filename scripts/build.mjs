@@ -1,5 +1,6 @@
 import { build } from 'esbuild';
-import { cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -7,7 +8,9 @@ import { createHash } from 'node:crypto';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const source = path.resolve(root, '../src/doc_converter');
 const payload = path.join(root, 'python/doc_converter');
-const excluded = new Set(['api.py', 'launcher.py', '__main__.py', 'web', '__pycache__']);
+const excluded = new Set(['api.py', 'launcher.py', '__main__.py', 'preview_fonts.py', 'web', '__pycache__']);
+const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+const packageName = manifest.name;
 
 const client = await build({
   absWorkingDir: root, entryPoints: ['client/entry.tsx'], bundle: true,
@@ -19,20 +22,37 @@ const client = await build({
 });
 const output = client.outputFiles.find((file) => file.path.endsWith('.js')) || client.outputFiles[0];
 await writeFile(path.join(root, 'client.js'),
-  `window.__ModuleLoader__.load({id:'dsh-doc-converter',factory(require){\nconst __dshReact=require('react');const module={exports:{}};const exports=module.exports;\n${output.text}\nreturn module.exports;\n}});\n`);
+  `window.__ModuleLoader__.load({id:${JSON.stringify(packageName)},factory(require){\nconst __dshReact=require('react');const module={exports:{}};const exports=module.exports;\n${output.text}\nreturn module.exports;\n}});\n`);
 await mkdir(payload, { recursive: true });
-await cp(source, payload, { recursive: true, filter: (file) => {
-  const name = path.basename(file);
-  return !excluded.has(name) && (!path.extname(name) || name.endsWith('.py'));
-} });
+if (existsSync(source)) {
+  // Start from an empty payload so modules removed upstream or newly excluded
+  // here cannot survive from an earlier build.
+  await rm(payload, { recursive: true, force: true });
+  await mkdir(payload, { recursive: true });
+  await cp(source, payload, { recursive: true, force: true, filter: (file) => {
+    const name = path.basename(file);
+    return !excluded.has(name) && (!path.extname(name) || name.endsWith('.py'));
+  } });
+} else if (existsSync(path.join(payload, '__init__.py'))) {
+  // A published checkout carries the copied payload only; publishing does not
+  // need the upstream sources, so keep the committed payload and continue.
+  console.log('上游转换源码不可用，沿用已提交的 Python 负载。');
+} else {
+  throw new Error(`缺少转换核心：${source} 与已提交的 ${payload} 都不存在。`);
+}
 
-const lock = await readFile(path.resolve(root, '../uv.lock'), 'utf8');
-const versions = new Map([...lock.matchAll(/\[\[package\]\]\r?\nname = "([^"]+)"\r?\nversion = "([^"]+)"/g)]
-  .map((match) => [match[1], match[2]]));
 const requirements = ['annotated-types', 'lxml', 'markdown-it-py', 'mdurl', 'pydantic',
   'pydantic-core', 'python-docx', 'pyyaml', 'typing-extensions', 'typing-inspection'];
-for (const name of requirements) if (!versions.has(name)) throw new Error(`Missing locked Python dependency: ${name}`);
-await writeFile(path.join(root, 'python/requirements.txt'), requirements.map((name) => `${name}==${versions.get(name)}`).join('\n') + '\n');
+const lockPath = path.resolve(root, '../uv.lock');
+if (existsSync(lockPath)) {
+  const lock = await readFile(lockPath, 'utf8');
+  const versions = new Map([...lock.matchAll(/\[\[package\]\]\r?\nname = "([^"]+)"\r?\nversion = "([^"]+)"/g)]
+    .map((match) => [match[1], match[2]]));
+  for (const name of requirements) if (!versions.has(name)) throw new Error(`Missing locked Python dependency: ${name}`);
+  await writeFile(path.join(root, 'python/requirements.txt'), requirements.map((name) => `${name}==${versions.get(name)}`).join('\n') + '\n');
+} else if (!existsSync(path.join(root, 'python/requirements.txt'))) {
+  throw new Error('缺少 python/requirements.txt 依赖锁定文件。');
+}
 
 async function files(directory, base = directory) {
   const result = [];
