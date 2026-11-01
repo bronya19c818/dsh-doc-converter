@@ -22,6 +22,7 @@ from doc_converter.normalizer import (
     _normalize_html_images,
     _normalize_html_sub_sup,
     _normalize_html_tables,
+    _normalize_inline_html_style,
     _normalize_metadata,
 )
 
@@ -55,35 +56,71 @@ def split_metadata(
         metadata.update(extracted)
     body_lines = [line for index, line in enumerate(lines) if index not in consumed]
     body = _join_split_image_syntax("\n".join(body_lines).strip("\n"))
+    body = _normalize_inline_html_style(body)
     body = _normalize_html_sub_sup(_normalize_html_tables(_normalize_html_images(body)))
     return metadata, body + "\n"
 
 
 def protect_ordered_list_literals(markdown: str) -> str:
-    """Escape ordered-list markers so Pandoc emits ordinary paragraphs.
+    """Shelter ordered-list items written across separate paragraphs.
 
-    Escaped markers on adjacent lines still merge into one Pandoc paragraph, so
-    a blank line is inserted between consecutive numbered items. The blank line
-    is removed again after rendering by joining the split paragraphs.
+    Pandoc turns an ordered list into Word list items. A run written as plain
+    numbered paragraphs (``1. 第一步`` then a blank line then ``2. 第二步``) is
+    backslash-escaped so it stays literal text; a run with no blank line in
+    between is a real list and is left to Pandoc. Code fences are untouched.
     """
 
+    index = 0
     lines: list[str] = []
+    all_lines = markdown.splitlines()
     in_fence = False
-    previous_numbered = False
-    for line in markdown.splitlines():
+    split_items = _standalone_numbered_lines(all_lines)
+    while index < len(all_lines):
+        line = all_lines[index]
         stripped = line.strip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
+        if stripped.startswith(("```", "~~~")):
             in_fence = not in_fence
-        numbered = False
-        if not in_fence and not _ORDERED_HEADING.match(line):
-            if _ORDERED_LIST.match(line):
-                numbered = True
-                line = _ORDERED_LIST.sub(r"\1\2\\.\3", line)
-            if numbered and previous_numbered:
-                lines.append("")
-        previous_numbered = numbered
+        if (
+            not in_fence
+            and not _ORDERED_HEADING.match(line)
+            and _ORDERED_LIST.match(line)
+            and index in split_items
+        ):
+            line = _ORDERED_LIST.sub(r"\1\2\\.\3", line)
         lines.append(_escape_inline_asterisks(line) if not in_fence or _blank(line) else line)
+        index += 1
     return "\n".join(lines) + "\n"
+
+
+def _standalone_numbered_lines(all_lines: list[str]) -> set[int]:
+    """Find numbered lines that stand alone instead of starting a list.
+
+    A lone ``1.`` item after a blank line and before a blank line is a plain
+    numbered paragraph; the same marker inside a run of items is a list item.
+    """
+
+    numbered = [
+        position
+        for position, line in enumerate(all_lines)
+        if _ORDERED_LIST.match(line) and not _ORDERED_HEADING.match(line)
+    ]
+    standalone: set[int] = set()
+    for position in numbered:
+        following = all_lines[position + 1] if position + 1 < len(all_lines) else ""
+        previous = all_lines[position - 1] if position > 0 else ""
+        next_is_item = _ORDERED_LIST.match(following) is not None
+        previous_is_item = _ORDERED_LIST.match(previous) is not None
+        following_blank = not following.strip()
+        previous_blank = not previous.strip()
+        if previous_is_item or next_is_item:
+            continue
+        if following_blank and (previous_blank or position == 0):
+            standalone.add(position)
+        elif not following.strip() and position == len(all_lines) - 1:
+            standalone.add(position)
+        elif not following_blank and not following.startswith((" ", "\t")):
+            standalone.add(position)
+    return standalone
 
 
 def _blank(value: str) -> bool:
@@ -131,7 +168,14 @@ def _escape_inline_asterisks(line: str) -> str:
 
 
 def _join_numbered_runs(paragraphs: list[Paragraph]) -> None:
-    """Undo the blank-line split between consecutive numbered paragraphs."""
+    """Undo the blank-line split between consecutive numbered paragraphs.
+
+    Only paragraphs that arrived from one rendered ordered list may be rejoined:
+    a numbered paragraph from source that has no list numbering (``1. 第一步``
+    written as plain text) must stay its own paragraph. Pandoc gives real list
+    items a ``Compact``/``BodyText`` style, so the run must not be plain
+    paragraphs by the time this runs.
+    """
 
     index = 0
     while index + 1 < len(paragraphs):
@@ -141,8 +185,11 @@ def _join_numbered_runs(paragraphs: list[Paragraph]) -> None:
             re.match(r"^\s*\d+\.\s", current.text)
             and re.match(r"^\s*\d+\.\s", following.text)
             and following.style is not None
+            and current.style is not None
             and following.style.style_id == current.style.style_id
             and not current._p.xpath(".//w:drawing | .//w:br")
+            and _came_from_list(current)
+            and _came_from_list(following)
         ):
             separator = OxmlElement("w:r")
             space = OxmlElement("w:t")
@@ -159,6 +206,33 @@ def _join_numbered_runs(paragraphs: list[Paragraph]) -> None:
         index += 1
 
 
+def _came_from_list(paragraph: Paragraph) -> bool:
+    """True when the paragraph carries Word list numbering from Pandoc.
+
+    Plain paragraphs stay independent: two separately written numbered
+    paragraphs must not lose their paragraph boundary.
+    """
+
+    return _has_numbering(paragraph)
+
+
+def _style_list_items(document: DocxDocument) -> None:
+    """Give numbered list items the body paragraph style, keeping the numbering.
+
+    Pandoc marks list items with a generic ``Compact``/``Normal`` paragraph and
+    a ``numPr``; mapping them to the body style keeps their indentation, line
+    spacing and Chinese font consistent with the rest of the body.
+    """
+
+    for paragraph in document.paragraphs:
+        if not paragraph._p.xpath("./w:pPr/w:numPr"):
+            continue
+        current = paragraph.style.style_id if paragraph.style is not None else ""
+        if current.startswith("DC_") or current in _METADATA_STYLE_IDS:
+            continue
+        paragraph.style = ROLE_TO_STYLE_ID["body-paragraph"]
+
+
 def apply_postprocess(
     document: DocxDocument,
     metadata: dict[str, Any],
@@ -169,9 +243,15 @@ def apply_postprocess(
     """Apply semantic style IDs, metadata paragraphs, lists and footers."""
 
     _join_numbered_runs(document.paragraphs)
+    # A page-break marker arrives as its own paragraph holding nothing but the
+    # hidden run; move that run into the following paragraph so the break does
+    # not leave an empty paragraph of body text behind.
+    _attach_break_paragraphs(document)
+    _drop_empty_rule_paragraphs(document)
+    _style_code_blocks(document)
     in_references = False
     for paragraph in document.paragraphs:
-        if metadata_rendered and paragraph.style.style_id in _METADATA_STYLE_IDS:
+        if metadata_rendered and paragraph.style is not None and paragraph.style.style_id in _METADATA_STYLE_IDS:
             _remove_numbering(paragraph)
             continue
         if _REFERENCE_HEADING_PATTERN.fullmatch(paragraph.text.strip()):
@@ -183,6 +263,7 @@ def apply_postprocess(
             paragraph,
             ROLE_TO_STYLE_ID["reference-entry"] if in_references else ROLE_TO_STYLE_ID["body-paragraph"],
         )
+    _style_list_items(document)
     for table in document.tables:
         _apply_table_borders(table)
         _style_table_cells(table)
@@ -192,6 +273,104 @@ def apply_postprocess(
     if not metadata_rendered:
         _insert_metadata(document, metadata)
     _add_page_footers(document)
+
+
+def _style_code_blocks(document: DocxDocument) -> None:
+    """Keep Pandoc code runs as code: one style, real line breaks, no indent.
+
+    Pandoc emits one paragraph per source code line with the ``SourceCode``
+    style and ``VerbatimChar`` runs. Mapping them to body text would lose both
+    the code look and the line structure, so consecutive code paragraphs are
+    joined with a line break and restyled as a single code block.
+    """
+
+    code_style = ROLE_TO_STYLE_ID["code-block"]
+    paragraphs = document.paragraphs
+    index = 0
+    while index < len(paragraphs):
+        paragraph = paragraphs[index]
+        if not _is_code_paragraph(paragraph):
+            index += 1
+            continue
+        block = [paragraph]
+        following_index = index + 1
+        while following_index < len(paragraphs) and _is_code_paragraph(paragraphs[following_index]):
+            block.append(paragraphs[following_index])
+            following_index += 1
+        first = block[0]
+        if len(block) > 1:
+            for extra in block[1:]:
+                for child in list(extra._p):
+                    if child.tag == qn("w:pPr"):
+                        continue
+                    first._p.append(child)
+                break_run = OxmlElement("w:r")
+                break_run.append(OxmlElement("w:br"))
+                first._p.append(break_run)
+                extra._p.getparent().remove(extra._p)
+            # The trailing break belongs to the paragraph break, not the code.
+            trailing = first._p.findall(qn("w:r"))[-1]
+            if trailing.find(qn("w:br")) is not None and not (trailing.text or ""):
+                first._p.remove(trailing)
+        first.style = code_style
+        _remove_numbering(first)
+        for run in first.runs:
+            run.style = None
+        index = following_index
+
+
+def _is_code_paragraph(paragraph: Paragraph) -> bool:
+    style_id = paragraph.style.style_id if paragraph.style is not None else ""
+    if style_id in {"SourceCode", ROLE_TO_STYLE_ID["code-block"]}:
+        return True
+    runs = [run for run in paragraph.runs if run.text.strip()]
+    return bool(runs) and all(run.style.style_id == "VerbatimChar" for run in runs)
+
+
+def _attach_break_paragraphs(document: DocxDocument) -> None:
+    """Fold a paragraph that only carries a page break into the next one."""
+
+    paragraphs = document.paragraphs
+    index = 0
+    while index + 1 < len(paragraphs):
+        current = paragraphs[index]
+        following = paragraphs[index + 1]
+        if not current.text.strip() and current._p.xpath(".//w:br[@w:type='page']") and not following._p.xpath(
+            ".//w:br[@w:type='page']"
+        ):
+            # Move every run of the break paragraph to the front of the next one.
+            for child in list(current._p):
+                if child.tag == qn("w:pPr"):
+                    continue
+                following._p.insert(0, child)
+            current._p.getparent().remove(current._p)
+            paragraphs = document.paragraphs
+            continue
+        index += 1
+
+
+def _drop_empty_rule_paragraphs(document: DocxDocument) -> None:
+    """Remove the paragraph Pandoc emits for a horizontal rule.
+
+    Pandoc renders ``---`` as a paragraph holding a thin VML rectangle
+    (``o:hr="t"``). Left in place it is an empty paragraph with body spacing in
+    front of the following text; drop the paragraph and keep nothing else.
+    """
+
+    for paragraph in list(document.paragraphs):
+        if paragraph.text.strip():
+            continue
+        # A horizontal rule is a thin VML rectangle flagged as ``o:hr``.
+        is_rule = any(
+            rect.get("{urn:schemas-microsoft-com:office:office}hr") == "t"
+            or rect.get("{urn:schemas-microsoft-com:office:office}hrstd") == "t"
+            for rect in paragraph._p.iter("{urn:schemas-microsoft-com:vml}rect")
+        ) or paragraph._p.xpath(".//w:pBdr/w:bottom")
+        if not is_rule:
+            continue
+        if paragraph._p.xpath(".//w:drawing | .//w:object | .//m:oMath | .//m:oMathPara"):
+            continue
+        paragraph._p.getparent().remove(paragraph._p)
 
 
 def _style_table_cells(table: Any) -> None:
@@ -351,8 +530,9 @@ def _all_paragraphs(document: DocxDocument) -> list[Paragraph]:
 
 
 def _style_captions(document: DocxDocument, *, preserve_metadata: bool = False) -> None:
+    _remove_duplicate_figure_captions(document)
     for paragraph in _all_paragraphs(document):
-        if preserve_metadata and paragraph.style.style_id in _METADATA_STYLE_IDS:
+        if preserve_metadata and paragraph.style is not None and paragraph.style.style_id in _METADATA_STYLE_IDS:
             continue
         if _has_numbering(paragraph) or paragraph._p.xpath(
             ".//w:drawing | .//w:pict | .//w:object | .//w:fldChar | .//w:fldSimple"
@@ -372,6 +552,30 @@ def _style_captions(document: DocxDocument, *, preserve_metadata: bool = False) 
                     run._r.rPr.remove(node)
             if run.style.style_id == ROLE_TO_STYLE_ID["point"]:
                 run.style = None
+
+
+def _remove_duplicate_figure_captions(document: DocxDocument) -> None:
+    """Drop a figure caption whose text already appears right before it.
+
+    A missing picture leaves Pandoc with a paragraph holding only the alt text
+    directly above the explicit caption line; both read as the same caption,
+    so the first one is removed and the explicit caption keeps its style.
+    """
+
+    paragraphs = document.paragraphs
+    for index in range(len(paragraphs) - 1, 0, -1):
+        current = paragraphs[index]
+        previous = paragraphs[index - 1]
+        if caption_role(current.text) is None or caption_role(previous.text) is None:
+            continue
+        if re.sub(r"\s+", "", current.text) != re.sub(r"\s+", "", previous.text):
+            continue
+        if previous._p.xpath(".//w:drawing | .//w:pict | .//w:object"):
+            continue
+        if _has_numbering(previous):
+            continue
+        previous._p.getparent().remove(previous._p)
+        paragraphs = document.paragraphs
 
 
 def _remove_numbering(paragraph: Paragraph) -> None:

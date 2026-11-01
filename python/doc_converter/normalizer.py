@@ -77,6 +77,7 @@ def normalize_markdown(
     confirmed_roles: dict[int, str],
     infer_metadata: bool = True,
     promote_bare_headings: bool = True,
+    preprocess: bool = True,
 ) -> NormalizedDocument:
     """Normalize explicit and narrowly recognizable title-area metadata.
 
@@ -89,21 +90,27 @@ def normalize_markdown(
     """
 
     raw_metadata, content_lines, first_content_line = _extract_front_matter(source)
-    preprocessed = preprocess_markdown(
-        "\n".join(content_lines),
-        line_map=[first_content_line + offset for offset in range(len(content_lines))],
-        promote_bare_headings=promote_bare_headings,
-    )
-    content_lines = preprocessed.text.splitlines()
+    if preprocess:
+        preprocessed = preprocess_markdown(
+            "\n".join(content_lines),
+            line_map=[first_content_line + offset for offset in range(len(content_lines))],
+            promote_bare_headings=promote_bare_headings,
+        )
+        content_lines = preprocessed.text.splitlines()
+        preprocess_changes = list(preprocessed.changes)
+        preprocess_map = preprocessed.line_map
+    else:
+        preprocess_changes = []
+        preprocess_map = [first_content_line + offset for offset in range(len(content_lines))]
     metadata = _normalize_metadata(raw_metadata)
-    changes: list[dict[str, str | int]] = list(preprocessed.changes)
+    changes: list[dict[str, str | int]] = preprocess_changes
     consumed: set[int] = set()
     if infer_metadata:
         extracted, consumed, extracted_changes = _extract_leading_metadata(
             content_lines,
             metadata,
             first_content_line,
-            line_numbers=preprocessed.line_map,
+            line_numbers=preprocess_map,
         )
         metadata.update(extracted)
         changes.extend(extracted_changes)
@@ -112,7 +119,7 @@ def normalize_markdown(
     for offset, line in enumerate(content_lines):
         if offset in consumed:
             continue
-        source_line = preprocessed.line_map[offset]
+        source_line = preprocess_map[offset]
         match = _HEADING_PATTERN.match(line)
         confirmed_role = confirmed_roles.get(source_line)
         if match and confirmed_role in {"document-title", "document-subtitle"}:
@@ -128,6 +135,7 @@ def normalize_markdown(
         normalized_lines.append(line)
 
     body = _normalize_html_tables("\n".join(normalized_lines).strip("\n"))
+    body = _escape_pipes_in_table_code_spans(body)
     markdown = _serialize_front_matter(metadata, body)
     integrity = _integrity_inventory(source, markdown)
     integrity["passed"] = integrity["images"] == integrity["normalized_images"] and integrity[
@@ -464,6 +472,34 @@ class _HtmlTableParser(HTMLParser):
             self._cell.append(data)
 
 
+def _escape_pipes_in_table_code_spans(markdown: str) -> str:
+    """Escape ``|`` inside inline code on table rows so the row keeps its cells.
+
+    GFM splits a pipe table on every unescaped ``|``, including the ones inside
+    a code span, so ``| `x|y` |`` loses a column. The pipe is escaped to ``\\|``
+    on table rows only; code spans elsewhere keep the raw character.
+    """
+
+    lines = markdown.splitlines()
+    output: list[str] = []
+    in_fence = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            output.append(line)
+            continue
+        if in_fence or "|" not in line or not stripped.startswith("|"):
+            output.append(line)
+            continue
+
+        def escape(match: re.Match[str]) -> str:
+            return match.group(0).replace("|", "\\|")
+
+        output.append(_INLINE_CODE_PATTERN.sub(escape, line))
+    return "\n".join(output)
+
+
 def _normalize_html_tables(markdown: str) -> str:
     """Convert simple raw HTML tables into editable Markdown tables."""
 
@@ -603,6 +639,101 @@ def _image_destinations(markdown: str) -> list[str]:
             html_parser.close()
             destinations.extend(html_parser.sources)
     return destinations
+
+
+_HTML_INLINE_STYLE = re.compile(
+    r"<(?P<tag>b|strong|i|em|u|s|del|strike|kbd|br|sup|sub|mark|span)(?P<attrs>\s[^>]*)?\s*/?>",
+    re.IGNORECASE,
+)
+_HTML_INLINE_CLOSE = re.compile(
+    r"</(?P<tag>b|strong|i|em|u|s|del|strike|kbd|mark|span)\s*>",
+    re.IGNORECASE,
+)
+
+
+def _normalize_inline_html_style(markdown: str) -> str:
+    """Map simple inline HTML tags onto Markdown's own emphasis syntax.
+
+    Raw inline HTML survives only as a literal tag, and Pandoc drops it from a
+    DOCX paragraph, so ``<strong>x</strong>`` would silently lose both the word
+    and its weight. Opening tags become ``**``/``*``; ``<u>``, ``<mark>`` and
+    ``<kbd>`` have no Markdown equivalent, so their tags are removed and only
+    the text is kept. ``<br>`` becomes a hard line break. Code spans and
+    fenced blocks are never touched.
+    """
+
+    def replace_open(match: re.Match[str]) -> str:
+        tag = match.group("tag").casefold()
+        if tag in {"b", "strong"}:
+            return "**"
+        if tag in {"i", "em"}:
+            return "*"
+        if tag == "br":
+            # A Pandoc line break keeps the two lines inside one paragraph.
+            return "\\\n"
+        if tag in {"s", "del", "strike"}:
+            return "~~"
+        return ""
+
+    def replace_close(match: re.Match[str]) -> str:
+        tag = match.group("tag").casefold()
+        if tag in {"b", "strong"}:
+            return "**"
+        if tag in {"i", "em"}:
+            return "*"
+        if tag in {"s", "del", "strike"}:
+            return "~~"
+        return ""
+
+    output: list[str] = []
+    ordinary: list[str] = []
+    fence: str | None = None
+    in_html_block = False
+
+    def flush() -> None:
+        if not ordinary:
+            return
+        block = "".join(ordinary)
+        code_spans: list[str] = []
+
+        def hold(match: re.Match[str]) -> str:
+            code_spans.append(match.group(0))
+            return f"\x00dc-inline-html-code-{len(code_spans) - 1}\x00"
+
+        transformed = _INLINE_CODE_PATTERN.sub(hold, block)
+        transformed = _HTML_INLINE_STYLE.sub(replace_open, transformed)
+        transformed = _HTML_INLINE_CLOSE.sub(replace_close, transformed)
+        for index, span in enumerate(code_spans):
+            transformed = transformed.replace(f"\x00dc-inline-html-code-{index}\x00", span)
+        output.append(transformed)
+        ordinary.clear()
+
+    for line in markdown.splitlines(keepends=True):
+        stripped = line.strip()
+        fence_match = re.match(r"^\s*(`{3,}|~{3,})", line)
+        if fence_match:
+            flush()
+            marker = fence_match.group(1)
+            if fence is None:
+                fence = marker
+            elif marker[0] == fence[0] and len(marker) >= len(fence):
+                fence = None
+            output.append(line)
+            continue
+        if fence is not None:
+            output.append(line)
+            continue
+        # Raw HTML table blocks are rewritten by the complex-table channel,
+        # which understands their markup; converting the tags here would strip
+        # the emphasis before that channel sees it.
+        if stripped.startswith("<table") or in_html_block:
+            flush()
+            in_html_block = "</table>" not in line
+            output.append(line)
+            continue
+        ordinary.append(line)
+    flush()
+    return "".join(output)
 
 
 def _normalize_html_images(markdown: str) -> str:

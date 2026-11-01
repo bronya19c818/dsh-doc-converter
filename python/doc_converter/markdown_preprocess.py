@@ -52,6 +52,15 @@ _HEADING_MARKER_PATTERNS: dict[str, re.Pattern[str]] = {
 _TITLE_AREA_LABEL_PATTERN = re.compile(
     r"^(?:摘要|关键词|作者(?:单位)?|单位|机构|组织|部门|日期|时间|发布时间)\s*[:：]"
 )
+_HTML_COMMENT_START = re.compile(r"^<!--")
+_HTML_BLOCK_TAG = re.compile(
+    r"^</?(?:address|article|aside|base|blockquote|body|caption|center|col|colgroup|dd|"
+    r"details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|head|"
+    r"header|hr|html|iframe|legend|li|link|main|menu|nav|noframes|ol|optgroup|option|p|"
+    r"param|pre|script|section|source|style|summary|table|tbody|td|tfoot|th|thead|title|"
+    r"tr|track|ul)(?:\s|/?>|$)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -77,6 +86,14 @@ def preprocess_markdown(
     if len(mapped_lines) != len(lines):
         raise ValueError("Markdown 行号映射必须与输入行数一致。")
     changes: list[dict[str, str | int]] = []
+
+    lines, mapped_lines, inserted_breaks = _separate_table_blocks(lines, mapped_lines)
+    if inserted_breaks:
+        changes.append({"to": "separate-table-block", "count": inserted_breaks})
+
+    lines, mapped_lines, closed_comments = _close_unterminated_comments(lines, mapped_lines)
+    if closed_comments:
+        changes.append({"to": "close-html-comment", "count": closed_comments})
 
     lines, mapped_lines, removed_toc = _remove_toc_lines(lines, mapped_lines)
     if removed_toc:
@@ -119,6 +136,121 @@ def preprocess_markdown(
         changes=changes,
         line_map=mapped_lines,
     )
+
+
+_TABLE_ROW_PATTERN = re.compile(r"^\s*\|.*\|\s*$")
+_TABLE_SEPARATOR_PATTERN = re.compile(
+    r"^\s*\|(?:\s*:?-{2,}:?\s*\|)+\s*$|^\s*\|(\s*:?-{2,}:?\s*\|)+\s*$"
+)
+
+
+def _separate_table_blocks(
+    lines: list[str],
+    line_map: list[int],
+) -> tuple[list[str], list[int], int]:
+    """Insert blank lines so a Markdown table is read as a table.
+
+    GFM needs a blank line before a table and after it; without the leading
+    blank a caption line written just above the first row is read as part of the
+    header, and with no blank line after the table the next paragraph joins the
+    last row. Both turn the whole table into paragraph text.
+    """
+
+    output: list[str] = []
+    output_map: list[int] = []
+    inserted = 0
+    in_fence = False
+    inside_table = False
+    for index, (line, source_line) in enumerate(zip(lines, line_map, strict=True)):
+        stripped = line.strip()
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            inside_table = False
+            output.append(line)
+            output_map.append(source_line)
+            continue
+        if in_fence:
+            output.append(line)
+            output_map.append(source_line)
+            continue
+
+        is_separator = bool(_TABLE_SEPARATOR_PATTERN.match(line))
+        is_row = (
+            not is_separator
+            and bool(_TABLE_ROW_PATTERN.match(line))
+            and line.count("|") >= 2
+        )
+        table_starts = is_row and _table_block_start(lines, index)
+        if table_starts and output and output[-1].strip():
+            output.append("")
+            output_map.append(source_line)
+            inserted += 1
+        if inside_table and stripped and not is_row and not is_separator:
+            # The table ended; keep the following paragraph separate.
+            output.append("")
+            output_map.append(source_line)
+            inserted += 1
+        if is_row or is_separator:
+            inside_table = True
+        elif stripped:
+            inside_table = False
+        output.append(line)
+        output_map.append(source_line)
+    return output, output_map, inserted
+
+
+def _table_block_start(lines: list[str], index: int) -> bool:
+    """True when ``index`` is the header row and the next line separates it."""
+
+    if index + 1 >= len(lines):
+        return False
+    if not _TABLE_SEPARATOR_PATTERN.match(lines[index + 1]):
+        return False
+    return True
+
+
+def _close_unterminated_comments(
+    lines: list[str],
+    line_map: list[int],
+) -> tuple[list[str], list[int], int]:
+    """Close an HTML comment that is opened but never closed.
+
+    Pandoc treats an unterminated comment as running to the end of the file and
+    silently drops every following paragraph. Append the missing ``-->`` at the
+    end of the block's last line so the remaining body survives.
+    """
+
+    output: list[str] = []
+    output_map: list[int] = []
+    open_at: int | None = None
+    closed = 0
+    in_fence = False
+    for index, (line, source_line) in enumerate(zip(lines, line_map, strict=True)):
+        stripped = line.strip()
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+        if in_fence:
+            output.append(line)
+            output_map.append(source_line)
+            continue
+        has_open = "<!--" in line
+        has_close = "-->" in line
+        if open_at is None and has_open and not has_close:
+            open_at = len(output)
+        elif open_at is not None and has_close:
+            open_at = None
+        output.append(line)
+        output_map.append(source_line)
+    if open_at is not None:
+        # Close after the first blank line that ends the comment block.
+        limit = len(output)
+        for position in range(open_at + 1, len(output)):
+            if not output[position].strip():
+                limit = position
+                break
+        output[limit - 1] = output[limit - 1].rstrip() + " -->"
+        closed = 1
+    return output, output_map, closed
 
 
 def is_standard_code_line(text: str) -> bool:
@@ -236,25 +368,68 @@ def _repair_broken_paragraph_lines(
     blocks: list[tuple[str, list[int]]] = []
     current_lines: list[str] = []
     current_map: list[int] = []
+    # For each block, whether a blank line or a code boundary came before it.
+    hard_break: list[bool] = []
+    pending_break = False
 
-    def flush() -> None:
+    def flush(break_before: bool) -> None:
         if current_lines and any(item.strip() for item in current_lines):
-            blocks.append(("\n".join(current_lines).strip(), current_map.copy()))
+            blocks.append(("\n".join(current_lines), current_map.copy()))
+            hard_break.append(break_before)
         current_lines.clear()
         current_map.clear()
 
-    for line, source_line in zip(lines, line_map, strict=True):
-        if line.strip():
-            current_lines.append(line)
-            current_map.append(source_line)
-        else:
-            flush()
-    flush()
+    # Indented and fenced code are kept out of the fragment merge: their first
+    # line is code, not a wrapped line of the paragraph above, and a leading
+    # ``#`` inside code is a comment rather than a heading.
+    fenced = _fenced_line_flags(lines)
+    indented = _indented_code_flags(lines)
+    in_code_block = False
+    blank_pending = False
+
+    for index, (line, source_line) in enumerate(zip(lines, line_map, strict=True)):
+        is_code = fenced[index] or indented[index]
+        if not line.strip():
+            if current_lines:
+                if in_code_block:
+                    current_lines.append(line)
+                    current_map.append(source_line)
+                else:
+                    blank_pending = True
+            continue
+        starts_new = bool(current_lines) and ((is_code != in_code_block) or (blank_pending and not in_code_block))
+        if starts_new:
+            flush(pending_break or blank_pending)
+            pending_break = False
+        blank_pending = False
+        in_code_block = is_code
+        current_lines.append(line)
+        current_map.append(source_line)
+    flush(pending_break)
+
+    if len(hard_break) != len(blocks):
+        hard_break = [True] * len(blocks)
 
     result: list[tuple[str, list[int]]] = []
     repaired = 0
-    for part, part_map in blocks:
-        if result and _should_merge_fragment(result[-1][0], part):
+    for position, (part, part_map) in enumerate(blocks):
+        previous = result[-1][0] if result else ""
+        first_line = part_map[0] - 1
+        starts_with_code = 0 <= first_line < len(lines) and (fenced[first_line] or indented[first_line])
+        # A blank line between two finished sentences is a real paragraph
+        # break; a visibly unfinished fragment around it is still a cross-page
+        # split worth joining. Code and HTML comments never merge with prose.
+        can_merge = (
+            position > 0
+            and result
+            and not starts_with_code
+            and not _HTML_COMMENT_START.match(part.strip())
+            and not _HTML_BLOCK_TAG.match(part.strip())
+            and not _ends_with_comment(result[-1][0])
+            and _should_merge_fragment(previous, part)
+            and (not hard_break[position] or not _blocked_by_blank_line(previous, part))
+        )
+        if can_merge:
             previous, previous_map = result[-1]
             result[-1] = (
                 previous.rstrip() + part.lstrip(),
@@ -276,12 +451,108 @@ def _repair_broken_paragraph_lines(
     return output, output_map, repaired
 
 
+def _ends_with_comment(value: str) -> bool:
+    """A block that is (or ends in) an HTML comment never absorbs its follower."""
+
+    stripped = value.strip()
+    return stripped.startswith("<!--") or stripped.endswith("-->")
+
+
+def _blocked_by_blank_line(previous: str, current: str) -> bool:
+    """A blank line before a complete sentence is a real paragraph break.
+
+    The cross-page repair only exists for text that is visibly unfinished, so
+    when both sides end like finished prose the blank line wins. A fragment
+    with no closing punctuation, or one that opens brackets, is still joined.
+    """
+
+    previous = previous.strip()
+    current = current.strip()
+    if not previous or not current:
+        return False
+    previous_complete = bool(re.search(r"[。！？；.!?;]$", previous))
+    current_complete = bool(re.search(r"[。！？；.!?;]$", current))
+    return previous_complete and current_complete
+
+def _fenced_line_flags(lines: list[str]) -> list[bool]:
+    """Mark the lines that belong to a fenced block, delimiters included."""
+
+    flags: list[bool] = []
+    fence: tuple[str, int] | None = None
+    for line in lines:
+        stripped = line.lstrip()
+        marker = stripped[:3]
+        if marker in {"```", "~~~"}:
+            if fence is None:
+                fence = (marker[0], 3)
+                flags.append(True)
+                continue
+            if marker[0] == fence[0]:
+                fence = None
+            flags.append(True)
+            continue
+        flags.append(fence is not None)
+    return flags
+
+
+def _indented_code_flags(lines: list[str]) -> list[bool]:
+    """Mark four-space indented code and its blank continuation lines.
+
+    An indented line only counts as code when a blank line or another code
+    line precedes it; a line indented after prose is a lazy continuation of
+    that paragraph.
+    """
+
+    flags = [False] * len(lines)
+    index = 0
+    previous_boundary = True
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if not stripped:
+            index += 1
+            previous_boundary = True
+            continue
+        if _is_indented_code_line(lines[index]) and previous_boundary:
+            while index < len(lines):
+                if not lines[index].strip():
+                    flags[index] = True
+                    index += 1
+                    continue
+                if not _is_indented_code_line(lines[index]):
+                    break
+                flags[index] = True
+                index += 1
+            previous_boundary = True
+            continue
+        # Any other non-blank line closes the indented block.
+        previous_boundary = False
+        index += 1
+    return flags
+
+
+def _is_indented_code_line(line: str) -> bool:
+    expanded = line.expandtabs(4)
+    return bool(line.strip()) and expanded.startswith("    ")
+
+
+def _is_thematic_break(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or stripped[0] not in "-*_":
+        return False
+    marker = stripped[0]
+    if any(char != marker for char in stripped if not char.isspace()):
+        return False
+    return len(stripped.replace(" ", "")) >= 3
+
+
 def _should_merge_fragment(previous: str, current: str) -> bool:
     previous = previous.strip()
     current = current.strip()
     if not previous or not current or _is_structural_start(current):
         return False
     if previous.startswith(("#", "|", "```", "~~~")):
+        return False
+    if _is_thematic_break(previous) or _is_thematic_break(current):
         return False
     if re.search(r"[。！？.!?]$", previous):
         return False
@@ -299,6 +570,10 @@ def _should_merge_fragment(previous: str, current: str) -> bool:
 def _is_structural_start(value: str) -> bool:
     first = value.strip()
     if first.startswith(("#", "|", "```", "~~~")) or _TITLE_AREA_LABEL_PATTERN.match(first):
+        return True
+    if _HTML_COMMENT_START.match(first) or _HTML_BLOCK_TAG.match(first):
+        return True
+    if _is_thematic_break(first):
         return True
     if _heading_kind(first, standard_document=False) is not None:
         return True
@@ -403,6 +678,9 @@ def _normalize_heading_lines(
     child_levels: dict[tuple[str, int, str], int] = {}
     changes: list[dict[str, str | int]] = []
     in_fence = False
+    indented = _indented_code_flags(lines)
+    in_html_block = False
+    in_comment = False
 
     for index, (line, source_line) in enumerate(zip(lines, line_map, strict=True)):
         candidate_line = _unescape_ordered_heading_marker(line)
@@ -412,9 +690,35 @@ def _normalize_heading_lines(
             output.append(line)
             output_map.append(source_line)
             continue
-        if in_fence:
+        if in_fence or indented[index]:
             output.append(line)
             output_map.append(source_line)
+            continue
+
+        # Raw HTML blocks carry their own markup; a table row such as
+        # ``| 甲 | 乙 |`` or an indented tag must never become a heading, and
+        # text inside an HTML comment is not document content.
+        if in_comment:
+            output.append(line)
+            output_map.append(source_line)
+            if "-->" in line:
+                in_comment = False
+            continue
+        if _HTML_COMMENT_START.match(stripped):
+            output.append(line)
+            output_map.append(source_line)
+            in_comment = "-->" not in line
+            continue
+        if in_html_block:
+            output.append(line)
+            output_map.append(source_line)
+            if not stripped:
+                in_html_block = False
+            continue
+        if _HTML_BLOCK_TAG.match(stripped) or stripped.startswith("<%"):
+            output.append(line)
+            output_map.append(source_line)
+            in_html_block = True
             continue
 
         match = _HEADING_PATTERN.match(line)
