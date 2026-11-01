@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,8 +9,28 @@ import test from 'node:test';
 
 import { WorkerClient, ConverterOperations } from '../host/runtime.js';
 
-const root = fileURLToPath(new URL('../../', import.meta.url));
-const python = process.env.DOC_CONVERTER_TEST_PYTHON || path.join(root, '.venv', 'Scripts', 'python.exe');
+const repoRoot = fileURLToPath(new URL('../', import.meta.url));
+
+/** Python modules ship inside the package; a nested checkout keeps them upstream. */
+function pythonRoot() {
+  const bundled = path.join(repoRoot, 'python');
+  return existsSync(path.join(bundled, 'doc_converter', '__init__.py'))
+    ? bundled : path.join(repoRoot, '..', 'src');
+}
+
+/** Accept an explicit interpreter, then a local venv, then the sibling project. */
+function pythonPath() {
+  const candidates = [
+    process.env.DOC_CONVERTER_TEST_PYTHON,
+    path.join(repoRoot, '.venv', 'Scripts', 'python.exe'),
+    path.join(repoRoot, '..', '.venv', 'Scripts', 'python.exe'),
+  ].filter(Boolean);
+  const found = candidates.find((candidate) => existsSync(candidate));
+  if (!found) throw new Error('请用 DOC_CONVERTER_TEST_PYTHON 指向一个 Python 3.12+ 解释器。');
+  return found;
+}
+
+const python = pythonPath();
 const localProcesses = {
   async resolveExecutable(command) { return command; },
   spawn(spec) {
@@ -33,7 +54,7 @@ test('shared host operations create an immutable style through the real Python w
   const dataRoot = await mkdtemp(path.join(os.tmpdir(), 'dsh-doc-converter-host-'));
   const worker = new WorkerClient({
     subprocess: localProcesses, pythonPath: python, dataRoot,
-    pythonRoot: path.join(root, 'src'),
+    pythonRoot: pythonRoot(),
   });
   t.after(() => worker.close());
   const operations = new ConverterOperations({ worker });
