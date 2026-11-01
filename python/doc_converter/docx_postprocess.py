@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any
 
@@ -10,6 +11,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm
 from docx.text.paragraph import Paragraph
+from docx.text.run import Run
 
 from doc_converter.captions import caption_role
 from doc_converter.docx_styles import ROLE_TO_STYLE_ID
@@ -181,14 +183,12 @@ def _map_paragraph(
     style_id = paragraph.style.style_id if paragraph.style is not None else ""
     had_numbering = _has_numbering(paragraph)
     text = paragraph.text
-    # Pandoc's extension-less fallback leaves this text literal. Markdown still
-    # parsed it as emphasis, so it decides the fallback exactly as the plain
-    # renderer would: a leading bold span means one point paragraph.
-    if text.count("**") >= 2 and text.startswith("**") and text.find("**", 2) > 2:
-        for run in paragraph.runs:
-            if run.text:
-                run.text = run.text.replace("**", "")
-                run.bold = True
+    # GFM leaves ``**标签。**正文`` literal when CJK punctuation blocks the
+    # closing delimiter, so rebuild those emphasis spans here. Text content is
+    # unchanged; only the marker characters become formatting.
+    if map_bold_to_point and "**" in text and _plain_text_runs(paragraph):
+        _split_literal_emphasis(paragraph)
+        text = paragraph.text
     heading_match = _HEADING_STYLE.match(style_id)
     if paragraph._p.xpath(".//w:drawing"):
         paragraph.style = ROLE_TO_STYLE_ID["image"]
@@ -311,6 +311,41 @@ def _has_numbering(paragraph: Paragraph) -> bool:
             return True
         style = style.base_style
     return False
+
+
+def _plain_text_runs(paragraph: Paragraph) -> bool:
+    """True when the paragraph holds literal text only, so emphasis can be rebuilt."""
+
+    for run in paragraph.runs:
+        if run._r.xpath(".//w:drawing | .//w:fldChar | .//w:instrText | .//m:oMath | .//w:ins | .//w:del"):
+            return False
+    return bool(paragraph.runs)
+
+
+def _split_literal_emphasis(paragraph: Paragraph) -> None:
+    """Rebuild ``**x**`` spans as real bold runs without changing the visible text."""
+
+    for run in list(paragraph.runs):
+        text = run.text
+        if "**" not in text:
+            continue
+        segments = text.split("**")
+        if len(segments) < 3:
+            continue
+        anchor = run._r
+        for index, segment in enumerate(segments):
+            if not segment:
+                continue
+            clone = copy.deepcopy(run._r)
+            for child in clone.findall(qn("w:t")):
+                clone.remove(child)
+            anchor.addnext(clone)
+            anchor = clone
+            piece = Run(clone, paragraph._parent)
+            piece.text = segment
+            if index % 2 == 1:
+                piece.bold = True
+        paragraph._p.remove(run._r)
 
 
 def _remove_direct_bold(run: Any) -> None:
