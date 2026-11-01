@@ -67,6 +67,7 @@ def preprocess_markdown(
     markdown: str,
     *,
     line_map: list[int] | None = None,
+    promote_bare_headings: bool = True,
 ) -> MarkdownPreprocessResult:
     """Apply the safe subset of the former Dify Markdown cleanup pipeline."""
 
@@ -104,6 +105,7 @@ def preprocess_markdown(
         lines,
         mapped_lines,
         standard_document=standard_document,
+        promote_bare_headings=promote_bare_headings,
     )
     changes.extend(heading_changes)
     while lines and not lines[0].strip():
@@ -393,6 +395,7 @@ def _normalize_heading_lines(
     line_map: list[int],
     *,
     standard_document: bool,
+    promote_bare_headings: bool = True,
 ) -> tuple[list[str], list[int], list[dict[str, str | int]]]:
     output: list[str] = []
     output_map: list[int] = []
@@ -418,7 +421,7 @@ def _normalize_heading_lines(
         is_bare_heading = match is None
         if match is None:
             title = stripped
-            if not _should_promote_bare_heading(
+            if not promote_bare_headings or not _should_promote_bare_heading(
                 lines,
                 index,
                 active_levels,

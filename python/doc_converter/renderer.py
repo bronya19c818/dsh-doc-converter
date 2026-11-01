@@ -27,6 +27,7 @@ from doc_converter.docx_postprocess import (
     split_metadata,
 )
 from doc_converter.docx_styles import compile_styles
+from doc_converter.markdown_inline import resolve_inline_markdown
 from doc_converter.markdown_metadata import write_metadata_filter
 from doc_converter.style_library import StylePack
 
@@ -85,11 +86,19 @@ def _render_docx(
     work_dir.mkdir(parents=True, exist_ok=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     metadata, body = split_metadata(markdown, infer_metadata=not metadata_final)
+    # Ambiguous inline markers (``*`` arithmetic, ``^`` exponents, ``_`` in
+    # identifiers) are scored before Pandoc sees them, so a marker is only
+    # converted when the evidence supports emphasis or a superscript.
+    body = resolve_inline_markdown(body).markdown
     body = extract_page_breaks(body)
     body, complex_tables = extract_complex_tables(body)
     source_path = work_dir / "document.body.md"
     reference_path = work_dir / "reference.docx"
-    source_path.write_text(protect_ordered_list_literals(body), encoding="utf-8")
+    # Write LF explicitly: on Windows the default newline would be CRLF, and
+    # Pandoc then drops backslash escapes such as ``\*`` in the same paragraph.
+    source_path.write_text(
+        protect_ordered_list_literals(body), encoding="utf-8", newline="\n",
+    )
     compile_reference_docx(style_pack, reference_path)
 
     command = [

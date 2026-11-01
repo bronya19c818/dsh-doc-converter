@@ -116,8 +116,14 @@ def normalize_plugin_markdown(source: str, *, filename: str) -> NormalizedDocume
 
     body = "\n".join(line for offset, line in enumerate(lines) if offset not in consumed)
     finalized = _serialize_front_matter(metadata, body).rstrip("\n") + "\n"
+    # A hand-written ATX outline already names the structure. A bare numbered
+    # line inside it competes between "numbered list item" and "numbered
+    # sub-heading", so it is scored instead of promoted by a single pattern;
+    # documents without ATX headings keep the deterministic outline rules.
+    has_atx_outline = any(_HEADING.match(line.strip()) for line in body.splitlines())
     normalized = normalize_markdown(
         finalized, filename=filename, confirmed_roles={}, infer_metadata=False,
+        promote_bare_headings=not has_atx_outline,
     )
     inventory = _integrity_inventory(source, normalized.markdown)
     normalized_images = inventory.pop("normalized_images")

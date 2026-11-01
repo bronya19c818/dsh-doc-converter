@@ -30,6 +30,7 @@ _METADATA_STYLE_IDS = frozenset(ROLE_TO_STYLE_ID[role] for role in (
     "abstract-label", "keywords-label",
 ))
 _ORDERED_LIST = re.compile(r"^(\s*)(\d+)\.(\s+)")
+_ORDERED_HEADING = re.compile(r"^\s*#{1,6}\s+\d+\.\s")
 _TABLE_BORDER_EDGES = ("top", "bottom", "left", "right", "insideH", "insideV")
 _HEADING_STYLE = re.compile(r"^Heading\s*([1-6])$", re.IGNORECASE)
 _REFERENCE_HEADING_PATTERN = re.compile(
@@ -59,17 +60,103 @@ def split_metadata(
 
 
 def protect_ordered_list_literals(markdown: str) -> str:
-    """Escape ordered-list markers so Pandoc emits ordinary paragraphs."""
+    """Escape ordered-list markers so Pandoc emits ordinary paragraphs.
+
+    Escaped markers on adjacent lines still merge into one Pandoc paragraph, so
+    a blank line is inserted between consecutive numbered items. The blank line
+    is removed again after rendering by joining the split paragraphs.
+    """
 
     lines: list[str] = []
     in_fence = False
+    previous_numbered = False
     for line in markdown.splitlines():
-        if line.strip().startswith("```") or line.strip().startswith("~~~"):
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
             in_fence = not in_fence
-        if not in_fence:
-            line = _ORDERED_LIST.sub(r"\1\2\\.\3", line)
-        lines.append(line)
+        numbered = False
+        if not in_fence and not _ORDERED_HEADING.match(line):
+            if _ORDERED_LIST.match(line):
+                numbered = True
+                line = _ORDERED_LIST.sub(r"\1\2\\.\3", line)
+            if numbered and previous_numbered:
+                lines.append("")
+        previous_numbered = numbered
+        lines.append(_escape_inline_asterisks(line) if not in_fence or _blank(line) else line)
     return "\n".join(lines) + "\n"
+
+
+def _blank(value: str) -> bool:
+    return not value.strip()
+
+
+def _escape_inline_asterisks(line: str) -> str:
+    """Escape every asterisk outside code and math so Pandoc keeps it literal.
+
+    Emphasis markers produced by the inline scorer arrive as ``**text**`` and
+    are re-emitted intact after this pass, so protecting literal asterisks here
+    costs nothing and stops arithmetic such as ``1*2*3*4`` from turning into
+    accidental emphasis.
+    """
+
+    if "$" in line and line.count("$$") >= 2:
+        return line
+    parts: list[str] = []
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if char == "`":
+            end = index
+            while end < len(line) and line[end] == "`":
+                end += 1
+            fence = line[index:end]
+            close = line.find(fence, end)
+            if close < 0:
+                parts.append(line[index:])
+                break
+            parts.append(line[index:close + len(fence)])
+            index = close + len(fence)
+            continue
+        if char == "*":
+            if line.startswith("**", index):
+                parts.append("**")
+                index += 2
+            else:
+                parts.append("\\*")
+                index += 1
+            continue
+        parts.append(char)
+        index += 1
+    return "".join(parts)
+
+
+def _join_numbered_runs(paragraphs: list[Paragraph]) -> None:
+    """Undo the blank-line split between consecutive numbered paragraphs."""
+
+    index = 0
+    while index + 1 < len(paragraphs):
+        current = paragraphs[index]
+        following = paragraphs[index + 1]
+        if (
+            re.match(r"^\s*\d+\.\s", current.text)
+            and re.match(r"^\s*\d+\.\s", following.text)
+            and following.style is not None
+            and following.style.style_id == current.style.style_id
+            and not current._p.xpath(".//w:drawing | .//w:br")
+        ):
+            separator = OxmlElement("w:r")
+            space = OxmlElement("w:t")
+            space.text = " "
+            space.set(qn("xml:space"), "preserve")
+            separator.append(space)
+            current._p.append(separator)
+            for child in list(following._p):
+                if child.tag != qn("w:pPr"):
+                    current._p.append(child)
+            following._p.getparent().remove(following._p)
+            del paragraphs[index + 1]
+            continue
+        index += 1
 
 
 def apply_postprocess(
@@ -81,6 +168,7 @@ def apply_postprocess(
 ) -> None:
     """Apply semantic style IDs, metadata paragraphs, lists and footers."""
 
+    _join_numbered_runs(document.paragraphs)
     in_references = False
     for paragraph in document.paragraphs:
         if metadata_rendered and paragraph.style.style_id in _METADATA_STYLE_IDS:
@@ -208,7 +296,6 @@ def _map_paragraph(
         if run.bold is True and map_bold_to_point:
             run.style = ROLE_TO_STYLE_ID["point"]
             _remove_direct_bold(run)
-
 
 def _apply_image_max_width(document: DocxDocument, max_image_width_cm: float | None) -> None:
     """Fit pictures to the body width or a smaller custom width without upscaling."""

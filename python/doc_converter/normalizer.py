@@ -76,6 +76,7 @@ def normalize_markdown(
     filename: str,
     confirmed_roles: dict[int, str],
     infer_metadata: bool = True,
+    promote_bare_headings: bool = True,
 ) -> NormalizedDocument:
     """Normalize explicit and narrowly recognizable title-area metadata.
 
@@ -91,6 +92,7 @@ def normalize_markdown(
     preprocessed = preprocess_markdown(
         "\n".join(content_lines),
         line_map=[first_content_line + offset for offset in range(len(content_lines))],
+        promote_bare_headings=promote_bare_headings,
     )
     content_lines = preprocessed.text.splitlines()
     metadata = _normalize_metadata(raw_metadata)
