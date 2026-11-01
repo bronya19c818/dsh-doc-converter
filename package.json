@@ -39,6 +39,7 @@
     "locale/*.json",
     "icon.svg",
     "THIRD_PARTY_NOTICES.txt",
+    "PUBLISHING.md",
     "README.md"
   ],
   "engines": {
