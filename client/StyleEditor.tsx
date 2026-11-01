@@ -5,6 +5,7 @@ import { useText } from './i18n'
 
 type StyleEditorProps = {
   disabled: boolean
+  onDelete: () => void
   onSaved: (pack: StylePack) => void
   onDirtyChange?: (dirty: boolean) => void
   pack: StylePack
@@ -95,7 +96,7 @@ const LINE_SPACING_RULES: Array<{ value: LineSpacingRule; label: string }> = [
 ]
 const INDENT_KEYS = ['first_line_indent_pt', 'left_indent_pt', 'right_indent_pt'] as const
 
-export function StyleEditor({ disabled, onSaved, onDirtyChange, pack, section = 'roles' }: StyleEditorProps) {
+export function StyleEditor({ disabled, onDelete, onSaved, onDirtyChange, pack, section = 'roles' }: StyleEditorProps) {
   const t = useText()
   const id = useId()
   const [roles, setRoles] = useState<RoleMap>(() => editableRolesFor(pack))
@@ -240,6 +241,7 @@ export function StyleEditor({ disabled, onSaved, onDirtyChange, pack, section = 
       <div className="style-savebar">
         {error ? <p className="error-message" role="alert">{error}</p> : null}
         <span className="style-save-status" role="status">{!hasChanges && !error && savedVersion !== null ? `${t('已保存')} · ${t('版本')} ${savedVersion}` : ''}</span>
+        <button className="dc-button dc-button-danger" disabled={disabled || saving} onClick={onDelete} type="button">{t('删除此样式')}</button>
         <button className="dc-button dc-button-primary" disabled={isDisabled || !hasChanges} type="submit">{t(saving ? '正在保存…' : '保存样式新版本')}</button>
       </div>
     </form>

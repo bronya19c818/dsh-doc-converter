@@ -1,5 +1,5 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile, rm } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, readdir, stat, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 
@@ -7,6 +7,29 @@ const ACTIONS = new Set([
   'dependencies', 'list_styles', 'create_style', 'revise_style', 'import_file',
   'convert', 'get_job', 'artifact', 'migrate_styles', 'delete_style',
 ]);
+
+/**
+ * Identity of the Python payload currently on disk. A plugin reload replaces
+ * the package, while a worker started earlier keeps the old modules in memory;
+ * comparing this fingerprint lets the next call restart that stale worker.
+ */
+async function payloadFingerprint(root) {
+  const hash = createHash('sha256');
+  async function walk(directory) {
+    let entries;
+    try { entries = await readdir(directory, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (entry.name.endsWith('.py')) {
+        hash.update(path.relative(root, full));
+        hash.update(await readFile(full));
+      }
+    }
+  }
+  await walk(root);
+  return hash.digest('hex');
+}
 
 /** One managed, serialized Python writer for one plugin data root. */
 export class WorkerClient {
@@ -16,16 +39,28 @@ export class WorkerClient {
   #closed = false;
   #pending = new Map();
   #stderr = '';
+  #fingerprint;
 
   constructor({ subprocess, pythonPath, pythonRoot, dataRoot, timeoutMs = 600_000 }) {
     Object.assign(this, { subprocess, pythonPath, pythonRoot, dataRoot, timeoutMs });
+  }
+
+  async #currentFingerprint() {
+    try { return await payloadFingerprint(this.pythonRoot); } catch { return undefined; }
   }
 
   async #start() {
     if (this.#closed) throw new Error('文档转换插件已停止。');
     await this.#stopping;
     if (this.#closed) throw new Error('文档转换插件已停止。');
-    if (this.#handle) return this.#handle;
+    if (this.#handle) {
+      // A reloaded package must not keep answering from the old in-memory
+      // modules: restart once when the payload on disk changed.
+      const fingerprint = await this.#currentFingerprint();
+      if (!fingerprint || fingerprint === this.#fingerprint) return this.#handle;
+      await this.#stop(new Error('文档转换插件已更新，正在重启工作进程。'));
+      if (this.#closed) throw new Error('文档转换插件已停止。');
+    }
     if (!this.#starting) {
       this.#starting = (async () => {
         await mkdir(this.dataRoot, { recursive: true });
@@ -46,6 +81,7 @@ export class WorkerClient {
         }
         this.#stderr = '';
         this.#handle = handle;
+        this.#fingerprint = await this.#currentFingerprint();
         const lines = createInterface({ input: handle.stdout, crlfDelay: Infinity });
         handle.stderr.setEncoding('utf8');
         handle.stderr.on('data', (chunk) => { this.#stderr = (this.#stderr + chunk).slice(-8000); });

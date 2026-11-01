@@ -55,6 +55,10 @@ export function reviseStylePack(pack: StylePack, payload: { name: string; roles:
   return rpc('revise_style', { id: pack.id, base_version: pack.version, ...payload })
 }
 
+export function deleteStylePack(pack: StylePack): Promise<{ deleted: string }> {
+  return rpc('delete_style', { id: pack.id })
+}
+
 export function getDependencies(signal?: AbortSignal): Promise<Dependencies> {
   return rpc('dependencies', {}, signal)
 }

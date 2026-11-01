@@ -44,6 +44,8 @@
 .dc-page .dc-button:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); }
 .dc-page .dc-button-primary { border-color: var(--dsw-alias-brand-primary); background: var(--dsw-alias-brand-primary); color: var(--dsw-alias-bg-base); }
 .dc-page .dc-button-primary:hover:not(:disabled) { background: var(--dsw-alias-brand-primary); opacity: .88; }
+.dc-page .dc-button-danger { border-color: var(--dsw-alias-danger-primary, #c62828); color: var(--dsw-alias-danger-primary, #c62828); }
+.dc-page .dc-button-danger:hover:not(:disabled) { background: var(--dsw-alias-danger-bg, rgba(198, 40, 40, .1)); border-color: var(--dsw-alias-danger-primary, #c62828); }
 .dc-page .dc-button svg, .dc-page .dc-text-button svg { flex: 0 0 auto; }
 .dc-page .dc-text-button { display: inline-flex; align-items: center; gap: 5px; padding: 2px 0; border: 0; background: transparent; color: var(--dsw-alias-brand-primary); text-align: left; text-decoration: none; text-underline-offset: 3px; }
 .dc-page .dc-text-button:hover:not(:disabled) { text-decoration: underline; }

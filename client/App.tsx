@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { IconAdjustments, IconAlertCircle, IconCheck, IconDownload, IconLoader2, IconPlayerPlay, IconPlus, IconRefresh } from '@tabler/icons-react'
 
-import { artifactUrl, convertJob, createStylePack, getDependencies, getJob, importFile, importPath, listStylePacks, type Dependencies, type Job, type StylePack } from './api'
+import { artifactUrl, convertJob, createStylePack, deleteStylePack, getDependencies, getJob, importFile, importPath, listStylePacks, type Dependencies, type Job, type StylePack } from './api'
 import { useText } from './i18n'
 import { StyleEditor } from './StyleEditor'
 import css from './styles.css'
@@ -46,6 +46,7 @@ export function App() {
   const [editorSection, setEditorSection] = useState<'roles' | 'page'>('roles')
   const [editorDirty, setEditorDirty] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [newPresetOpen, setNewPresetOpen] = useState(false)
   const [newName, setNewName] = useState('')
   const [job, setJob] = useState<Job | null>(null)
@@ -195,6 +196,25 @@ export function App() {
     setEditorDirty(false)
   }
 
+  async function deleteSelectedPreset() {
+    if (!selectedPack || busy || creating || deleting) return
+    if (!window.confirm(`${t('删除样式')}「${selectedPack.name}」？${t('删除后无法恢复。')}`)) return
+    setDeleting(true)
+    setError(null)
+    try {
+      await deleteStylePack(selectedPack)
+      setPacks((current) => {
+        const next = current.filter((item) => item.id !== selectedPack.id)
+        setSelectedId(next[0]?.id ?? '')
+        return next
+      })
+      setEditorOpen(false)
+      setEditorVisited(false)
+      setEditorDirty(false)
+    } catch (deleteError) { setError(errorMessage(deleteError, t('操作未完成，请重试。'))) }
+    finally { setDeleting(false) }
+  }
+
   async function startConversion() {
     if (starting.current || busy || creating || editorDirty) return
     setError(null)
@@ -285,7 +305,7 @@ export function App() {
                     }} role="tab" tabIndex={editorSection === section ? 0 : -1} type="button">{t(section === 'roles' ? '样式角色' : '页面设置')}</button>
                   ))}
                 </div>
-                <div aria-labelledby={`${id}-settings-${editorSection}`} id={`${id}-settings-content`} role="tabpanel"><StyleEditor disabled={busy || creating} onDirtyChange={setEditorDirty} onSaved={savedPreset} pack={selectedPack} section={editorSection} /></div>
+                <div aria-labelledby={`${id}-settings-${editorSection}`} id={`${id}-settings-content`} role="tabpanel"><StyleEditor disabled={busy || creating || deleting} onDelete={() => void deleteSelectedPreset()} onDirtyChange={setEditorDirty} onSaved={savedPreset} pack={selectedPack} section={editorSection} /></div>
               </>
             ) : null}
           </div>
