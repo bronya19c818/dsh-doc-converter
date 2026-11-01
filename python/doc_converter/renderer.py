@@ -8,6 +8,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from zipfile import BadZipFile
 
 from docx import Document
@@ -53,8 +54,13 @@ def render_docx(
     work_dir: Path,
     pandoc_path: Path | None = None,
     metadata_final: bool = False,
+    audit: dict[str, Any] | None = None,
 ) -> RenderResult:
-    """Publish a valid DOCX; ``metadata_final`` disables fresh role inference."""
+    """Publish a valid DOCX; ``metadata_final`` disables fresh role inference.
+
+    ``audit``, when given, receives the scored inline decisions so the caller
+    can store them with the job's normalization report.
+    """
 
     if style_pack.format_id != "docx":
         raise ValueError("DOCX 渲染器只能使用 format_id 为 docx 的样式包。")
@@ -66,6 +72,7 @@ def render_docx(
             result = _render_docx(
                 markdown=markdown, style_pack=style_pack, output_path=staged_output,
                 work_dir=work_dir, pandoc_path=pandoc_path, metadata_final=metadata_final,
+                audit=audit,
             )
             Document(str(staged_output))
             staged_output.replace(output_path)
@@ -80,6 +87,7 @@ def render_docx(
 def _render_docx(
     *, markdown: str, style_pack: StylePack, output_path: Path,
     work_dir: Path, pandoc_path: Path | None, metadata_final: bool = False,
+    audit: dict[str, Any] | None = None,
 ) -> RenderResult:
     """Build the staged document, retaining the task's resource directory."""
     resolved_pandoc = pandoc_path or resolve_pandoc()
@@ -89,7 +97,10 @@ def _render_docx(
     # Ambiguous inline markers (``*`` arithmetic, ``^`` exponents, ``_`` in
     # identifiers) are scored before Pandoc sees them, so a marker is only
     # converted when the evidence supports emphasis or a superscript.
-    body = resolve_inline_markdown(body).markdown
+    inline = resolve_inline_markdown(body)
+    if audit is not None:
+        audit["inline_decisions"] = inline.report
+    body = inline.markdown
     body = extract_page_breaks(body)
     body, complex_tables = extract_complex_tables(body)
     source_path = work_dir / "document.body.md"

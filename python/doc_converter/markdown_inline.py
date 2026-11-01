@@ -268,6 +268,23 @@ def _emphasis_score(line: str, start: int, body_start: int, body_end: int,
         scored.add("emphasis.alnum_start", 2, "强调内容以文字或数字开头")
     if body and (body[-1].isalnum() or _CJK.match(body[-1])):
         scored.add("emphasis.alnum_end", 1, "强调内容以文字或数字结尾")
+
+    # Emphasis must be delimited from prose. ``圆周率*半径*半径=圆的面积`` glues
+    # both asterisks to the surrounding text, which is how multiplication is
+    # written; a real emphasis span sits between spaces or punctuation.
+    glued_left = bool(before) and (before.isalnum() or _CJK.match(before) or before in ")]}）】")
+    glued_right = bool(after) and (after.isalnum() or _CJK.match(after) or after in "([{（【")
+    if glued_left and glued_right:
+        scored.add("literal.glued_both", 11, "星号两侧都紧贴文字，更像乘号")
+    elif glued_left or glued_right:
+        scored.add("literal.glued_one", 5, "一侧星号紧贴文字")
+    if after in "=＝" or before in "=＝":
+        scored.add("literal.equation_side", 7, "星号紧邻等号，处于算式")
+    if re.search(r"[=＝]", line):
+        scored.add("literal.equation_line", 6, "整行含等号，更像算式而非强调")
+    if re.search(r"[+\-−×*/÷]", body.strip("*")):
+        scored.add("literal.operator_inside", 4, "强调内容夹带运算符")
+
     if body.isdigit() or (body and all(part.strip().isdigit() for part in body.split("*"))):
         scored.add("literal.digits_only", 12, "星号之间只有数字，更像乘式")
     if _MATH_IDENTIFIER.match(body) or (len(body) == 1 and not _CJK.match(body)):

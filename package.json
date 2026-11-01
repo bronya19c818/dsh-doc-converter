@@ -1,6 +1,6 @@
 {
   "name": "dsh-doc-converter",
-  "version": "0.1.6",
+  "version": "0.1.8",
   "description": "Local deterministic document conversion and versioned styles for DSH",
   "private": true,
   "type": "module",

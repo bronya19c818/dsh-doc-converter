@@ -272,11 +272,15 @@ class Application:
                 if not normalized.report["integrity"]["passed"]:
                     raise ValueError("内容完整性校验失败，已阻止 DOCX 生成。")
                 output_name = safe_docx_filename(normalized.metadata.get("title"), job["source_name"])
+                inline_audit: dict[str, Any] = {}
                 render_docx(
                     markdown=normalized.markdown, style_pack=style,
                     output_path=directory / output_name, work_dir=directory / "work",
                     pandoc_path=self._system_pandoc(), metadata_final=True,
+                    audit=inline_audit,
                 )
+                if inline_audit:
+                    normalized.report.update(inline_audit)
                 atomic_write_text(directory / "document.normalized.md", normalized.markdown)
                 atomic_write_text(directory / "normalization-report.json", json.dumps(
                     normalized.report, ensure_ascii=False, indent=2,
