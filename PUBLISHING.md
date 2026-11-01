@@ -47,4 +47,4 @@ npm publish --access public
 
 ## 许可
 
-当前 `license` 为 `UNLICENSED`（保留所有权利）。若改为开源许可，需要同时补 `LICENSE` 文件并更新 `package.json` 与 README。
+MIT，见 `LICENSE`。仓库根目录的许可文件会被 npm 自动打进发布包，无需列入 `files`。若更换许可，需同步更新 `LICENSE`、`package.json` 的 `license` 字段与 README。

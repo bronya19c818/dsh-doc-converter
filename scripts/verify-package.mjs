@@ -84,6 +84,13 @@ if (/from\s+['"]@deepseek-ai\//.test(entry)) {
 
 if (!manifest.engines?.dsh) problems.push('缺少 engines.dsh 版本门槛，旧版 DSH 会尝试加载不兼容插件。');
 
+const declaredLicense = String(manifest.license ?? '');
+if (!declaredLicense) {
+  problems.push('缺少 license 字段。');
+} else if (!/^UNLICENSED$|^SEE LICENSE IN /i.test(declaredLicense) && !existsSync(path.join(root, 'LICENSE'))) {
+  problems.push(`声明了 ${declaredLicense} 许可，但缺少 LICENSE 文件。`);
+}
+
 if (problems.length) {
   console.error('发布前检查未通过：');
   for (const problem of problems) console.error(` - ${problem}`);
