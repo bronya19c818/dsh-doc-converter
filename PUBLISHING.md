@@ -31,7 +31,9 @@ npm view dsh-doc-converter version   # 404 表示名称可用
 npm publish --access public
 ```
 
-本包已用 `npm publish --dry-run` 验证过产物：63 个文件，含入口、`cordis.patch.yml`、`client.js`、51 个 Python 模块与锁定依赖清单。
+若账号启用了 2FA，`npm publish` 需要一次性验证码；用自动化发布时改用勾选「Bypass 2FA」的 granular access token，避免每次输入验证码。
+
+当前产物：65 个文件，含入口、`cordis.patch.yml`、`client.js`、`LICENSE`、51 个 Python 模块与锁定依赖清单。`0.1.10` 是首个发布版本。
 
 ## 发布后
 
