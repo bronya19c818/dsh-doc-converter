@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-doc-converter
+      name: dsh-doc-converter
+      config: {}

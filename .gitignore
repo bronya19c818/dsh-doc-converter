@@ -1,0 +1,7 @@
+# 构建与验收产物
+artifacts/
+*.tgz
+
+# 依赖与测试临时目录
+node_modules/
+.test-runs/
