@@ -1,6 +1,6 @@
 {
   "name": "dsh-doc-converter",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Local, AI-free document conversion for DeepSeek Harness with versioned DOCX styles",
   "keywords": [
     "dsh-plugin",
@@ -54,11 +54,15 @@
     "prepublishOnly": "node scripts/verify-package.mjs"
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": ["@deepseek-ai/dsh-client-ui-conversation"]
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
     }
   },
   "devDependencies": {

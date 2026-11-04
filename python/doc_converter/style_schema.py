@@ -12,6 +12,20 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+A4_WIDTH_CM = 21.0
+A4_HEIGHT_CM = 29.7
+
+# Named paper sizes in centimetres (width, height), portrait orientation.
+PAPER_SIZES: dict[str, tuple[float, float]] = {
+    "A4": (21.0, 29.7),
+    "A3": (29.7, 42.0),
+    "B5": (17.6, 25.0),
+    "16K": (18.4, 26.0),
+    "Letter": (21.59, 27.94),
+    "Legal": (21.59, 35.56),
+}
+DEFAULT_PAPER_SIZE = "A4"
+
 ROLE_KEYS = (
     "document-title",
     "document-subtitle",
@@ -85,16 +99,31 @@ class ParagraphSpec(BaseModel):
 
 
 class PageSpec(BaseModel):
-    """Page settings expressed in centimetres for the editor."""
+    """Page settings expressed in centimetres for the editor.
+
+    ``paper_size`` selects from :data:`PAPER_SIZES` (defaults to A4); the
+    concrete width/height are derived from it.  Legacy packs that still carry
+    ``page_width_cm``/``page_height_cm`` are ignored.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
+    paper_size: str = DEFAULT_PAPER_SIZE
     margin_top_cm: float = 3.5
     margin_bottom_cm: float = 3.5
     margin_left_cm: float = 2.8
     margin_right_cm: float = 2.8
-    page_width_cm: float = 21.0
-    page_height_cm: float = 29.7
+
+    def _dimensions(self) -> tuple[float, float]:
+        return PAPER_SIZES.get(self.paper_size, PAPER_SIZES[DEFAULT_PAPER_SIZE])
+
+    @property
+    def page_width_cm(self) -> float:
+        return self._dimensions()[0]
+
+    @property
+    def page_height_cm(self) -> float:
+        return self._dimensions()[1]
 
 
 class ImageSpec(BaseModel):
@@ -296,12 +325,11 @@ def default_roles() -> dict[str, dict[str, Any]]:
         "page": _role(
             role_type="page",
             page={
+                "paper_size": "A4",
                 "margin_top_cm": 3.5,
                 "margin_bottom_cm": 3.5,
                 "margin_left_cm": 2.8,
                 "margin_right_cm": 2.8,
-                "page_width_cm": 21.0,
-                "page_height_cm": 29.7,
             },
         ),
     }
@@ -423,8 +451,15 @@ def migrate_roles(raw_roles: Any) -> dict[str, dict[str, Any]]:
         if not isinstance(value, dict):
             value = {}
         if role_key == "page":
+            raw_page = value.get("page", value)
             page = dict(fallback.get("page", {}))
-            page.update(value.get("page", value))
+            if isinstance(raw_page, dict):
+                page.update(raw_page)
+            # Paper size is a named choice; drop any persisted width/height.
+            page.pop("page_width_cm", None)
+            page.pop("page_height_cm", None)
+            if not isinstance(page.get("paper_size"), str) or page["paper_size"] not in PAPER_SIZES:
+                page["paper_size"] = DEFAULT_PAPER_SIZE
             migrated[role_key] = _role(role_type="page", page=page)
             continue
         if role_key == "image":

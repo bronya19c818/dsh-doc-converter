@@ -13,7 +13,7 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Mm, Pt, RGBColor
 
 from doc_converter.style_library import StylePack
-from doc_converter.style_schema import migrate_roles
+from doc_converter.style_schema import PAPER_SIZES, DEFAULT_PAPER_SIZE, migrate_roles
 
 ROLE_TO_STYLE_ID = {
     "document-title": "DC_DocumentTitle",
@@ -60,20 +60,20 @@ def compile_styles(document: DocxDocument, style_pack: StylePack) -> None:
     roles = migrate_roles(style_pack.roles)
     page = roles.get("page", {}).get("page", {})
     section = document.sections[0]
+    # Paper size is chosen by name (defaults to A4); only the margins are free.
+    paper = page.get("paper_size")
+    width_cm, height_cm = PAPER_SIZES.get(paper, PAPER_SIZES[DEFAULT_PAPER_SIZE])
+    section.page_width = Mm(round(width_cm * 10))
+    section.page_height = Mm(round(height_cm * 10))
     for attribute, key in (
         ("top_margin", "margin_top_cm"),
         ("bottom_margin", "margin_bottom_cm"),
         ("left_margin", "margin_left_cm"),
         ("right_margin", "margin_right_cm"),
-        ("page_width", "page_width_cm"),
-        ("page_height", "page_height_cm"),
     ):
         value = page.get(key)
         if isinstance(value, (int, float)):
-            if attribute in {"page_width", "page_height"}:
-                setattr(section, attribute, Mm(round(float(value) * 10)))
-            else:
-                setattr(section, attribute, Cm(value))
+            setattr(section, attribute, Cm(value))
 
     for role, style_id in ROLE_TO_STYLE_ID.items():
         role_data = roles.get(role, {})

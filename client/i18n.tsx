@@ -151,8 +151,8 @@ const TEXT: Record<string, string> = {
   '下边距（厘米）': 'Bottom margin (cm)',
   '左边距（厘米）': 'Left margin (cm)',
   '右边距（厘米）': 'Right margin (cm)',
-  '页面宽度（厘米）': 'Page width (cm)',
-  '页面高度（厘米）': 'Page height (cm)',
+  '纸张大小': 'Paper size',
+  '16 开': '16K',
 }
 
 const entries = Object.entries(TEXT)

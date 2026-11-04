@@ -95,6 +95,14 @@ const LINE_SPACING_RULES: Array<{ value: LineSpacingRule; label: string }> = [
   { value: 'exact', label: '固定值' }, { value: 'multiple', label: '多倍' },
 ]
 const INDENT_KEYS = ['first_line_indent_pt', 'left_indent_pt', 'right_indent_pt'] as const
+const PAPER_SIZES: Array<{ value: string; label: string }> = [
+  { value: 'A4', label: 'A4' },
+  { value: 'A3', label: 'A3' },
+  { value: 'B5', label: 'B5' },
+  { value: '16K', label: '16 开' },
+  { value: 'Letter', label: 'Letter' },
+  { value: 'Legal', label: 'Legal' },
+]
 
 export function StyleEditor({ disabled, onDelete, onSaved, onDirtyChange, pack, section = 'roles' }: StyleEditorProps) {
   const t = useText()
@@ -229,7 +237,13 @@ export function StyleEditor({ disabled, onDelete, onSaved, onDirtyChange, pack, 
         <fieldset className="style-group page-settings">
           <legend>{t('页面设置')}</legend>
           <div className="style-grid">
-            {(['page_width_cm', 'page_height_cm', 'margin_top_cm', 'margin_bottom_cm', 'margin_left_cm', 'margin_right_cm'] as const).map((key) => (
+            <label>
+              {t('纸张大小')}
+              <select aria-label={t('纸张大小')} disabled={isDisabled} onChange={(event) => updateRole(setRoles, 'page', ['page', 'paper_size'], event.target.value)} value={stringValue(roles.page?.page?.paper_size, 'A4')}>
+                {PAPER_SIZES.map((option) => <option key={option.value} value={option.value}>{t(option.label)}</option>)}
+              </select>
+            </label>
+            {(['margin_top_cm', 'margin_bottom_cm', 'margin_left_cm', 'margin_right_cm'] as const).map((key) => (
               <label key={key}>
                 {t(pageLabel(key))}
                 <input aria-label={t(pageLabel(key))} disabled={isDisabled} min="0" onChange={(event) => updateRole(setRoles, 'page', ['page', key], Number(event.target.value))} step="0.1" type="number" value={numberValue(roles.page?.page?.[key], 2.8)} />
@@ -452,7 +466,7 @@ function defaultRoleMap(): RoleMap {
   roles['reference-heading'] = { role_type: 'paragraph', font: { ...font, chinese_font: '黑体', western_font: 'Times New Roman', size_pt: 14, bold: true }, paragraph: { ...paragraph, first_line_indent_pt: 0, space_before_pt: 5, line_spacing_pt: 18, line_spacing_rule: 'minimum' } }
   roles['reference-entry'] = { role_type: 'paragraph', font: { ...font, chinese_font: '宋体', western_font: 'Times New Roman', size_pt: 7.5 }, paragraph: { ...paragraph, alignment: 'justify', first_line_indent_pt: 0, space_before_pt: 0, line_spacing_pt: 12, line_spacing_rule: 'minimum' } }
   roles.footer = { role_type: 'paragraph', font: { ...font, chinese_font: '宋体', size_pt: 14 }, paragraph: { ...paragraph, alignment: 'center' } }
-  roles.page = { role_type: 'page', page: { margin_top_cm: 3.5, margin_bottom_cm: 3.5, margin_left_cm: 2.8, margin_right_cm: 2.8, page_width_cm: 21, page_height_cm: 29.7 } }
+  roles.page = { role_type: 'page', page: { paper_size: 'A4', margin_top_cm: 3.5, margin_bottom_cm: 3.5, margin_left_cm: 2.8, margin_right_cm: 2.8 } }
   return roles
 }
 
@@ -508,7 +522,6 @@ function pageLabel(key: string): string {
   const names: Record<string, string> = {
     margin_top_cm: '上边距（厘米）', margin_bottom_cm: '下边距（厘米）',
     margin_left_cm: '左边距（厘米）', margin_right_cm: '右边距（厘米）',
-    page_width_cm: '页面宽度（厘米）', page_height_cm: '页面高度（厘米）',
   }
   return names[key] ?? key
 }

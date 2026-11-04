@@ -354,8 +354,8 @@ var TEXT = {
   "\u4E0B\u8FB9\u8DDD\uFF08\u5398\u7C73\uFF09": "Bottom margin (cm)",
   "\u5DE6\u8FB9\u8DDD\uFF08\u5398\u7C73\uFF09": "Left margin (cm)",
   "\u53F3\u8FB9\u8DDD\uFF08\u5398\u7C73\uFF09": "Right margin (cm)",
-  "\u9875\u9762\u5BBD\u5EA6\uFF08\u5398\u7C73\uFF09": "Page width (cm)",
-  "\u9875\u9762\u9AD8\u5EA6\uFF08\u5398\u7C73\uFF09": "Page height (cm)"
+  "\u7EB8\u5F20\u5927\u5C0F": "Paper size",
+  "16 \u5F00": "16K"
 };
 var entries = Object.entries(TEXT);
 var keys = new Map(entries.map(([source], index) => [source, `message${index}`]));
@@ -474,6 +474,14 @@ var LINE_SPACING_RULES = [
   { value: "multiple", label: "\u591A\u500D" }
 ];
 var INDENT_KEYS = ["first_line_indent_pt", "left_indent_pt", "right_indent_pt"];
+var PAPER_SIZES = [
+  { value: "A4", label: "A4" },
+  { value: "A3", label: "A3" },
+  { value: "B5", label: "B5" },
+  { value: "16K", label: "16 \u5F00" },
+  { value: "Letter", label: "Letter" },
+  { value: "Legal", label: "Legal" }
+];
 function StyleEditor({ disabled, onDelete, onSaved, onDirtyChange, pack, section = "roles" }) {
   const t = useText();
   const id = (0, import_react3.useId)();
@@ -558,7 +566,7 @@ function StyleEditor({ disabled, onDelete, onSaved, onDirtyChange, pack, section
   )))), /* @__PURE__ */ __dshReact.createElement("div", { "aria-labelledby": `${id}-${roleSection}`, className: "role-workspace", id: `${id}-roles`, role: "tabpanel" }, /* @__PURE__ */ __dshReact.createElement("nav", { "aria-label": t("\u6837\u5F0F\u76EE\u5F55"), className: "role-directory" }, visibleGroups.map((group) => /* @__PURE__ */ __dshReact.createElement("div", { key: group.title }, /* @__PURE__ */ __dshReact.createElement("p", null, t(group.title)), group.roles.map((key) => /* @__PURE__ */ __dshReact.createElement("button", { "aria-pressed": key === selectedRole, key, onClick: () => {
     setActiveRole(key);
     if (inspectorRef.current) inspectorRef.current.scrollTop = 0;
-  }, type: "button" }, t(ROLE_LABELS[key] ?? key)))))), /* @__PURE__ */ __dshReact.createElement("div", { className: "role-inspector", ref: inspectorRef }, /* @__PURE__ */ __dshReact.createElement("h3", { className: "role-inspector-heading" }, t(ROLE_LABELS[selectedRole] ?? selectedRole)), visibleGroups.map((group) => /* @__PURE__ */ __dshReact.createElement("fieldset", { className: "style-group inspector-group", key: group.title }, /* @__PURE__ */ __dshReact.createElement("legend", null, t(group.title)), /* @__PURE__ */ __dshReact.createElement("div", { className: "role-grid" }, group.roles.map((roleKey) => /* @__PURE__ */ __dshReact.createElement("div", { hidden: roleKey !== selectedRole, key: roleKey }, /* @__PURE__ */ __dshReact.createElement(RoleEditor, { disabled: isDisabled, onChange: (field, value) => updateRole(setRoles, roleKey, field, value), roleKey, role: roles[roleKey] }))))))))) : null, section === "page" ? /* @__PURE__ */ __dshReact.createElement("fieldset", { className: "style-group page-settings" }, /* @__PURE__ */ __dshReact.createElement("legend", null, t("\u9875\u9762\u8BBE\u7F6E")), /* @__PURE__ */ __dshReact.createElement("div", { className: "style-grid" }, ["page_width_cm", "page_height_cm", "margin_top_cm", "margin_bottom_cm", "margin_left_cm", "margin_right_cm"].map((key) => /* @__PURE__ */ __dshReact.createElement("label", { key }, t(pageLabel(key)), /* @__PURE__ */ __dshReact.createElement("input", { "aria-label": t(pageLabel(key)), disabled: isDisabled, min: "0", onChange: (event) => updateRole(setRoles, "page", ["page", key], Number(event.target.value)), step: "0.1", type: "number", value: numberValue(roles.page?.page?.[key], 2.8) }))))) : null, /* @__PURE__ */ __dshReact.createElement("div", { className: "style-savebar" }, error ? /* @__PURE__ */ __dshReact.createElement("p", { className: "error-message", role: "alert" }, error) : null, /* @__PURE__ */ __dshReact.createElement("span", { className: "style-save-status", role: "status" }, !hasChanges && !error && savedVersion !== null ? `${t("\u5DF2\u4FDD\u5B58")} \xB7 ${t("\u7248\u672C")} ${savedVersion}` : ""), /* @__PURE__ */ __dshReact.createElement("button", { className: "dc-button dc-button-danger", disabled: disabled || saving, onClick: onDelete, type: "button" }, t("\u5220\u9664\u6B64\u6837\u5F0F")), /* @__PURE__ */ __dshReact.createElement("button", { className: "dc-button dc-button-primary", disabled: isDisabled || !hasChanges, type: "submit" }, t(saving ? "\u6B63\u5728\u4FDD\u5B58\u2026" : "\u4FDD\u5B58\u6837\u5F0F\u65B0\u7248\u672C"))));
+  }, type: "button" }, t(ROLE_LABELS[key] ?? key)))))), /* @__PURE__ */ __dshReact.createElement("div", { className: "role-inspector", ref: inspectorRef }, /* @__PURE__ */ __dshReact.createElement("h3", { className: "role-inspector-heading" }, t(ROLE_LABELS[selectedRole] ?? selectedRole)), visibleGroups.map((group) => /* @__PURE__ */ __dshReact.createElement("fieldset", { className: "style-group inspector-group", key: group.title }, /* @__PURE__ */ __dshReact.createElement("legend", null, t(group.title)), /* @__PURE__ */ __dshReact.createElement("div", { className: "role-grid" }, group.roles.map((roleKey) => /* @__PURE__ */ __dshReact.createElement("div", { hidden: roleKey !== selectedRole, key: roleKey }, /* @__PURE__ */ __dshReact.createElement(RoleEditor, { disabled: isDisabled, onChange: (field, value) => updateRole(setRoles, roleKey, field, value), roleKey, role: roles[roleKey] }))))))))) : null, section === "page" ? /* @__PURE__ */ __dshReact.createElement("fieldset", { className: "style-group page-settings" }, /* @__PURE__ */ __dshReact.createElement("legend", null, t("\u9875\u9762\u8BBE\u7F6E")), /* @__PURE__ */ __dshReact.createElement("div", { className: "style-grid" }, /* @__PURE__ */ __dshReact.createElement("label", null, t("\u7EB8\u5F20\u5927\u5C0F"), /* @__PURE__ */ __dshReact.createElement("select", { "aria-label": t("\u7EB8\u5F20\u5927\u5C0F"), disabled: isDisabled, onChange: (event) => updateRole(setRoles, "page", ["page", "paper_size"], event.target.value), value: stringValue(roles.page?.page?.paper_size, "A4") }, PAPER_SIZES.map((option) => /* @__PURE__ */ __dshReact.createElement("option", { key: option.value, value: option.value }, t(option.label))))), ["margin_top_cm", "margin_bottom_cm", "margin_left_cm", "margin_right_cm"].map((key) => /* @__PURE__ */ __dshReact.createElement("label", { key }, t(pageLabel(key)), /* @__PURE__ */ __dshReact.createElement("input", { "aria-label": t(pageLabel(key)), disabled: isDisabled, min: "0", onChange: (event) => updateRole(setRoles, "page", ["page", key], Number(event.target.value)), step: "0.1", type: "number", value: numberValue(roles.page?.page?.[key], 2.8) }))))) : null, /* @__PURE__ */ __dshReact.createElement("div", { className: "style-savebar" }, error ? /* @__PURE__ */ __dshReact.createElement("p", { className: "error-message", role: "alert" }, error) : null, /* @__PURE__ */ __dshReact.createElement("span", { className: "style-save-status", role: "status" }, !hasChanges && !error && savedVersion !== null ? `${t("\u5DF2\u4FDD\u5B58")} \xB7 ${t("\u7248\u672C")} ${savedVersion}` : ""), /* @__PURE__ */ __dshReact.createElement("button", { className: "dc-button dc-button-danger", disabled: disabled || saving, onClick: onDelete, type: "button" }, t("\u5220\u9664\u6B64\u6837\u5F0F")), /* @__PURE__ */ __dshReact.createElement("button", { className: "dc-button dc-button-primary", disabled: isDisabled || !hasChanges, type: "submit" }, t(saving ? "\u6B63\u5728\u4FDD\u5B58\u2026" : "\u4FDD\u5B58\u6837\u5F0F\u65B0\u7248\u672C"))));
 }
 function RoleEditor({ disabled, onChange, roleKey, role }) {
   const t = useText();
@@ -695,7 +703,7 @@ function defaultRoleMap() {
   roles["reference-heading"] = { role_type: "paragraph", font: { ...font, chinese_font: "\u9ED1\u4F53", western_font: "Times New Roman", size_pt: 14, bold: true }, paragraph: { ...paragraph, first_line_indent_pt: 0, space_before_pt: 5, line_spacing_pt: 18, line_spacing_rule: "minimum" } };
   roles["reference-entry"] = { role_type: "paragraph", font: { ...font, chinese_font: "\u5B8B\u4F53", western_font: "Times New Roman", size_pt: 7.5 }, paragraph: { ...paragraph, alignment: "justify", first_line_indent_pt: 0, space_before_pt: 0, line_spacing_pt: 12, line_spacing_rule: "minimum" } };
   roles.footer = { role_type: "paragraph", font: { ...font, chinese_font: "\u5B8B\u4F53", size_pt: 14 }, paragraph: { ...paragraph, alignment: "center" } };
-  roles.page = { role_type: "page", page: { margin_top_cm: 3.5, margin_bottom_cm: 3.5, margin_left_cm: 2.8, margin_right_cm: 2.8, page_width_cm: 21, page_height_cm: 29.7 } };
+  roles.page = { role_type: "page", page: { paper_size: "A4", margin_top_cm: 3.5, margin_bottom_cm: 3.5, margin_left_cm: 2.8, margin_right_cm: 2.8 } };
   return roles;
 }
 function updateRole(setRoles, roleKey, field, value) {
@@ -777,9 +785,7 @@ function pageLabel(key) {
     margin_top_cm: "\u4E0A\u8FB9\u8DDD\uFF08\u5398\u7C73\uFF09",
     margin_bottom_cm: "\u4E0B\u8FB9\u8DDD\uFF08\u5398\u7C73\uFF09",
     margin_left_cm: "\u5DE6\u8FB9\u8DDD\uFF08\u5398\u7C73\uFF09",
-    margin_right_cm: "\u53F3\u8FB9\u8DDD\uFF08\u5398\u7C73\uFF09",
-    page_width_cm: "\u9875\u9762\u5BBD\u5EA6\uFF08\u5398\u7C73\uFF09",
-    page_height_cm: "\u9875\u9762\u9AD8\u5EA6\uFF08\u5398\u7C73\uFF09"
+    margin_right_cm: "\u53F3\u8FB9\u8DDD\uFF08\u5398\u7C73\uFF09"
   };
   return names[key] ?? key;
 }
