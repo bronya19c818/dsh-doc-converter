@@ -52,7 +52,11 @@ def _assign_shadow_regions(features: list[dict[str, Any]], config: ScoringConfig
                           "person_name_pattern", "author_name_list_shape", "organization_pattern", "caption_pattern",
                           "reference_boundary", "has_complex_object", "has_manual_break")
         )
-        if outside and (_safe_heading(f) or sentence_boundary or plain_boundary):
+        if outside and (
+            f["addressee_line"]
+            or (not f["sole_leading_top_heading"]
+                and (_safe_heading(f) or sentence_boundary or plain_boundary))
+        ):
             body_started = True
         region = "postface" if postface_started else "body" if body_started else "preface"
         f.update(region=region, is_preface=region == "preface",
@@ -167,7 +171,14 @@ def resolve_candidates(
             "has_complex_object", "has_manual_break"))
     ]
     title_index: int | None = None
-    if titles:
+    sole_title_index = next(
+        (i for i, f in enumerate(features)
+         if f["sole_leading_top_heading"] and f["table_context"] is None),
+        None,
+    )
+    if sole_title_index is not None:
+        title_index = sole_title_index
+    elif titles:
         title_index, title = max(titles, key=lambda pair: (pair[1].resolved_score, -pair[0]))
         if title.resolved_score < config.medium_score:
             title_index = None

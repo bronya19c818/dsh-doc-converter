@@ -5,12 +5,17 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Pt
+from docx.text.paragraph import Paragraph
 
 from doc_converter.docx_direct.analyzer import _iter_paragraphs
 from doc_converter.docx_direct.character_styles import CharacterStyleProjector
 from doc_converter.docx_direct.effective_format import EffectiveFormatResolver
 from doc_converter.docx_direct.formatting import (
+    _record,
     _text_runs,
     apply_paragraph_policy,
     apply_run_policy,
@@ -31,6 +36,31 @@ from doc_converter.docx_styles import ROLE_TO_STYLE_ID
 
 STYLE_CONTROLLED_RUN_TAGS = (qn("w:rFonts"), qn("w:sz"), qn("w:szCs"))
 
+_ALIGNMENTS = {
+    "left": WD_ALIGN_PARAGRAPH.LEFT,
+    "center": WD_ALIGN_PARAGRAPH.CENTER,
+    "right": WD_ALIGN_PARAGRAPH.RIGHT,
+    "justify": WD_ALIGN_PARAGRAPH.JUSTIFY,
+    "both": WD_ALIGN_PARAGRAPH.JUSTIFY,
+    "distribute": WD_ALIGN_PARAGRAPH.DISTRIBUTE,
+}
+
+
+def _keep_signature_layout(paragraph: Any, element: Any, audit: TransformationAudit) -> None:
+    """Keep signature and date lines on one row: source alignment, no first-line indent."""
+
+    fmt = Paragraph(paragraph, None).paragraph_format
+    alignment = _ALIGNMENTS.get(str(element.effective_format.get("alignment") or "").lower())
+    if alignment is not None:
+        fmt.alignment = alignment
+    fmt.first_line_indent = Pt(0)
+    fmt.left_indent = Pt(0)
+    fmt.right_indent = Pt(0)
+    _record(
+        audit, "preserved", "ind", "paragraph", "preserve",
+        "签名或落款行沿用源对齐并取消首行缩进，避免占位下划线折行", 1,
+    )
+
 
 def patch_document_xml(
     payload: bytes,
@@ -46,6 +76,65 @@ def patch_document_xml(
         neutral_styles=neutral,
         paragraph_preserver=ParagraphStylePreserver(styles_payload) if styles_payload else None,
     )
+
+
+def _pin_autofit_tables(body: Any) -> None:
+    """Pin source grid widths so restyled text cannot squeeze auto-fit columns."""
+
+    for table in body.iter(qn("w:tbl")):
+        grid = table.find(qn("w:tblGrid"))
+        if grid is None:
+            continue
+        widths = [int(column.get(qn("w:w")) or 0) for column in grid.findall(qn("w:gridCol"))]
+        if not widths or sum(widths) <= 0 or not _table_widths_are_auto(table):
+            continue
+        properties = table.find(qn("w:tblPr"))
+        if properties is None:
+            continue
+        layout = properties.find(qn("w:tblLayout"))
+        if layout is not None and (layout.get(qn("w:type")) or "").lower() == "fixed":
+            continue
+        if layout is None:
+            layout = OxmlElement("w:tblLayout")
+            properties.insert_element_before(
+                layout, "w:tblCellMar", "w:tblLook", "w:tblCaption", "w:tblDescription",
+            )
+        layout.set(qn("w:type"), "fixed")
+        for row in table.findall(qn("w:tr")):
+            position = 0
+            for cell in row.findall(qn("w:tc")):
+                cell_properties = cell.find(qn("w:tcPr"))
+                span = cell_properties.find(qn("w:gridSpan")) if cell_properties is not None else None
+                try:
+                    count = int(span.get(qn("w:val")) or 1) if span is not None else 1
+                except ValueError:
+                    count = 1
+                total = sum(widths[position:position + count])
+                position += count
+                if total <= 0:
+                    continue
+                if cell_properties is None:
+                    cell_properties = OxmlElement("w:tcPr")
+                    cell.insert(0, cell_properties)
+                cell_width = cell_properties.find(qn("w:tcW"))
+                if cell_width is None:
+                    cell_width = OxmlElement("w:tcW")
+                    cell_properties.insert(0, cell_width)
+                cell_width.set(qn("w:w"), str(total))
+                cell_width.set(qn("w:type"), "dxa")
+
+
+def _table_widths_are_auto(table: Any) -> bool:
+    for row in table.findall(qn("w:tr")):
+        for cell in row.findall(qn("w:tc")):
+            properties = cell.find(qn("w:tcPr"))
+            width = properties.find(qn("w:tcW")) if properties is not None else None
+            if width is None:
+                continue
+            kind = (width.get(qn("w:type")) or "auto").lower()
+            if kind in {"dxa", "pct"} and int(width.get(qn("w:w")) or 0) > 0:
+                return False
+    return True
 
 
 def patch_document_parts(
@@ -91,6 +180,7 @@ def _patch_document_xml(
     body = root.find(qn("w:body"))
     if body is None:
         raise ValueError("DOCX 的 word/document.xml 缺少 w:body。")
+    _pin_autofit_tables(body)
     paragraphs = {path: paragraph for paragraph, path, _ in _iter_paragraphs(body)}
     field_runs = protected_field_runs(body)
     report: dict[str, Any] = {
@@ -205,6 +295,8 @@ def _patch_document_xml(
         paragraph_removed = apply_paragraph_policy(
             paragraph, policy, audit, target_style=target_style
         )
+        if decision.role == "body-paragraph" and element.features.get("signature_line"):
+            _keep_signature_layout(paragraph, element, audit)
         if (
             decision.role in {"body-table", "table-row-header", "table-column-header"}
             and "ind" in paragraph_removed

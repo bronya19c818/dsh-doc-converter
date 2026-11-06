@@ -1,6 +1,6 @@
 {
   "name": "dsh-doc-converter",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Local, AI-free document conversion for DeepSeek Harness with versioned DOCX styles",
   "keywords": [
     "dsh-plugin",

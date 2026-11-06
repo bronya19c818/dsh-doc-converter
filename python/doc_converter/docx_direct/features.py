@@ -40,6 +40,13 @@ AUTHOR_AFFILIATION = re.compile(
 )
 REFERENCE_BOUNDARIES = {"参考文献", "参考资料", "references"}
 TERMINAL_PUNCTUATION = "。；：，、？！.!?,;:"
+# Word 内置正文类段落样式（含粘贴 HTML 生成的 "Normal (Web)"）不是自定义样式。
+NON_CUSTOM_STYLES = frozenset({
+    "normal", "正文", "body text", "body text 2", "body text 3",
+    "normal (web)", "normalweb", "普通(网站)", "正文(网站)",
+})
+ADDRESSEE_LINE = re.compile(r"^致\s*[:：]")
+SIGNATURE_LINE = re.compile(r"_{3,}")
 NUMBERING_PATTERNS = (
     ("CHAPTER", re.compile(r"^第\s*[一二三四五六七八九十百\d]+\s*章")),
     ("SECTION", re.compile(r"^第\s*[一二三四五六七八九十百\d]+\s*节")),
@@ -196,9 +203,14 @@ def _plain_features(element: ElementAnalysis, index: int, total: int) -> dict[st
         "has_manual_break": element.has_manual_break,
         "short_text": 0 < len(text) <= 80,
         "body_sentence": terminal and len(text) >= 6,
+        "addressee_line": len(text) <= 80 and bool(ADDRESSEE_LINE.match(text)),
+        "signature_line": bool(
+            len(text) <= 60 and not terminal and SIGNATURE_LINE.search(text)
+        ) and element.table_context is None and not is_list,
         "custom_style": bool(element.original_style_name)
-        and (element.original_style_name or "").lower() not in {"normal", "正文", "body text", "body text 2"}
+        and (element.original_style_name or "").lower() not in NON_CUSTOM_STYLES
         and native is None and not is_list,
+        "sole_leading_top_heading": False,
     }
 
 
@@ -255,4 +267,25 @@ def extract_document_features(
                                        and (f["original_style_id"] or "Normal") == baseline["common_body_style"])
         f["common_body_alignment"] = bool(baseline["common_body_alignment"]
                                            and f["alignment"] == baseline["common_body_alignment"])
+    _mark_sole_leading_top_heading(features)
     return features, baseline
+
+
+def _mark_sole_leading_top_heading(features: list[dict[str, Any]]) -> None:
+    """Flag a lone H1 that opens the body: that paragraph is the document title."""
+
+    top = [index for index, f in enumerate(features) if f["native_heading_level"] == 1]
+    if len(top) != 1:
+        return
+    leading = next(
+        (index for index, f in enumerate(features)
+         if f["text_length"] and f["table_context"] is None),
+        None,
+    )
+    if leading != top[0]:
+        return
+    f = features[leading]
+    if (f["numbering_family"] or f["list"] or f["body_sentence"] or f["text_length"] > 80
+            or f["has_complex_object"] or f["has_manual_break"]):
+        return
+    f["sole_leading_top_heading"] = True

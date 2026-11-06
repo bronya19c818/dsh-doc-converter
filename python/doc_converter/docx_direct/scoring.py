@@ -68,7 +68,9 @@ def score_roles(features: dict[str, Any], config: ScoringConfig) -> list[RoleCan
     near_body = ratio is not None and abs(ratio - 1) <= config.body_font_tolerance
     centered = f["alignment"] == "center"
     early = f["document_order"] < 12
-    metadata = any(f[k] for k in ("explicit_author_label", "explicit_organization_label", "explicit_date", "person_name_pattern", "organization_pattern")) or (
+    # A trailing organisation name alone is not metadata evidence: running text
+    # often ends with "……公司" and must not be pushed away from body-paragraph.
+    metadata = any(f[k] for k in ("explicit_author_label", "explicit_organization_label", "explicit_date", "person_name_pattern")) or (
         f["author_name_list_shape"] and not f["numbering_family"] and f["table_context"] is None
     )
     for candidate in candidates:
@@ -120,6 +122,8 @@ def score_roles(features: dict[str, Any], config: ScoringConfig) -> list[RoleCan
                 add("heading_automatic_list", -100, "自动列表保留列表语义")
             if metadata or f["caption_pattern"] or f["reference_boundary"]:
                 add("heading_other_content", -70, "明确元数据、题注或参考文献边界与普通标题冲突")
+            if f["addressee_line"]:
+                add("heading_addressee", -70, "公函抬头行不是标题")
         elif role == "body-paragraph":
             if f["text_length"]:
                 add("body_nonempty", 20, "非空文字提供基本正文证据")
@@ -133,6 +137,12 @@ def score_roles(features: dict[str, Any], config: ScoringConfig) -> list[RoleCan
                 add("body_complete_sentence", 35, "具有正常句末标点的完整句")
             if f["text_length"] >= 20:
                 add("body_length", 10, "文本长度提供正文证据")
+            if (f["common_body_style"] and not f["custom_style"] and not f["numbering_family"]
+                    and not f["native_heading_level"] and f["table_context"] is None
+                    and not f["list"]):
+                add("body_plain_running", 10, "沿用全文常见正文样式且无标题、编号或表格结构证据")
+            if f["addressee_line"]:
+                add("body_addressee", 25, "公函抬头行属于正文")
             if f["numbering_family"] and not f["body_sentence"]:
                 add("body_heading_number", -35, "短编号文本与普通正文竞争")
             if f["native_heading_level"]:

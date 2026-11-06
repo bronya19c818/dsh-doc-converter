@@ -8,7 +8,7 @@ from typing import Any
 from doc_converter.captions import caption_role
 from doc_converter.docx_direct.decision_selector import select_decision
 from doc_converter.docx_direct.explicit_roles import select_explicit_role
-from doc_converter.docx_direct.features import extract_document_features
+from doc_converter.docx_direct.features import NON_CUSTOM_STYLES, extract_document_features
 from doc_converter.docx_direct.model import (
     Action,
     ClassificationDecision,
@@ -122,12 +122,45 @@ def classify_document(
         select_table_header(element)
         select_explicit_role(element)
     finish_source_audit(legacy.elements, baselines)
+    baselines = _select_document_title(legacy.elements, baselines)
     return legacy.model_copy(update={
         "classification_mode": decision_mode,
         "document_baselines": baselines,
         "scoring_config": config.model_dump(mode="json"),
         "table_header_inference": table_headers,
     })
+
+
+def _select_document_title(
+    elements: list[ElementAnalysis], baselines: dict[str, Any],
+) -> dict[str, Any]:
+    """Treat a lone top heading that opens the body as the document title."""
+
+    index = next(
+        (position for position, element in enumerate(elements)
+         if element.features.get("sole_leading_top_heading")),
+        None,
+    )
+    if index is None:
+        return baselines
+    element = elements[index]
+    decision = element.selected_decision
+    if decision is None or decision.role != "heading-1":
+        return baselines
+    if element.table_context is not None or any((
+        element.has_field, element.has_drawing, element.has_embedded_object,
+        element.has_math, element.has_manual_break,
+    )):
+        return baselines
+    reason = "全文仅此一个顶层标题且位于正文首位，按文档标题处理"
+    element.selected_decision = ClassificationDecision(
+        role="document-title", confidence=1, action="mapped", reasons=[reason],
+    )
+    element.selection_source = "explicit"
+    element.selection_reason = reason
+    element.region = "preface"
+    element.features["region"] = "preface"
+    return {**baselines, "primary_title_element_index": index}
 
 
 def classify_document_legacy(analysis: DocumentAnalysis) -> DocumentAnalysis:
@@ -473,7 +506,7 @@ def _is_custom_style(style_name: str | None) -> bool:
     if not style_name:
         return False
     normalized = style_name.lower()
-    return normalized not in {"normal", "正文", "body text", "body text 2"} and not normalized.startswith(
+    return normalized not in NON_CUSTOM_STYLES and not normalized.startswith(
         ("heading", "list ")
     )
 

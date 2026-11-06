@@ -141,14 +141,20 @@ def verify_effective_format(analysis: DocumentAnalysis, output: Path, pack: Styl
                            "match": None if reason else actual == wanted, "excluded_reason": reason})
 
         target = expected[decision.role]
+        signature_layout = (
+            decision.role == "body-paragraph" and bool(before.features.get("signature_line"))
+        )
         check("pStyle", after.original_style_id, ROLE_TO_STYLE_ID[decision.role])
         for key in ("alignment", "outline_level", "keep_next", "page_break_before", "widow_control"):
-            check(key, after.effective_format.get(key), target.get(key))
+            check(key, after.effective_format.get(key), target.get(key),
+                  "落款行沿用源对齐，避免占位下划线折行" if signature_layout and key == "alignment" else None)
         for key in ("paragraph_indent", "paragraph_spacing"):
             for attr, wanted in target[key].items():
                 numbered = key == "paragraph_indent" and bool(after.numbering_properties)
-                check(key + "." + attr, after.effective_format[key].get(attr), wanted,
-                      "编号相关缩进结构保留" if numbered else None)
+                reason = "编号相关缩进结构保留" if numbered else None
+                if signature_layout and key == "paragraph_indent" and attr in {"left", "right", "firstLine"}:
+                    reason = "落款行取消首行缩进，保持签名与日期单行显示"
+                check(key + "." + attr, after.effective_format[key].get(attr), wanted, reason)
         p = paragraphs[after.xml_path]
         eligible, guarded = _text_runs(p, field_runs)
         allowed = set(eligible)
