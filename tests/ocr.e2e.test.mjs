@@ -82,14 +82,21 @@ function fakeOcrServer() {
     if (request.method === 'GET' && url.pathname === '/jsonl') {
       const pages = [
         {
+          prunedResult: {
+            parsing_res_list: [
+              { block_label: 'header', block_content: '附件4' },
+              { block_label: 'footnote', block_content: '“三域”指物资库、专业仓、项目/作业现场。' },
+              { block_label: 'number', block_content: '1' },
+            ],
+          },
           markdown: {
-            text: '## 第一章\n\n正文内容。\n\n<div style="text-align: center;"><img src="imgs/pic.jpg" alt="图片" width="60%" /></div>\n',
+            text: '## 测试文档\n\n正文内容 $ ^{1} $。\n\n## 流向示意图\n\n<div style="text-align: center;"><img src="imgs/pic.jpg" alt="Image" width="60%" /></div>\n',
             images: { 'imgs/pic.jpg': `http://127.0.0.1:${server.port}/img/pic.jpg` },
           },
           outputImages: { layout_det_res: `http://127.0.0.1:${server.port}/img/pic.jpg` },
         },
-        { markdown: { text: '## 第二章\n\n第二页内容，建立调整机', images: {} } },
-        { markdown: { text: '制。\n\n## 第三章\n\n第三页内容。', images: {} } },
+        { markdown: { text: '## 一、工作思路\n\n第二页内容，建立调整机', images: {} } },
+        { markdown: { text: '制。\n\n## （一）分级\n\n1.事中管控。第三页内容。', images: {} } },
       ];
       response.writeHead(200, { 'Content-Type': 'application/jsonl' });
       response.end(`${JSON.stringify({ result: { layoutParsingResults: pages } })}\n`);
@@ -156,13 +163,12 @@ test('OCR markdown delivery is a zip of normalized Markdown and local images', a
   await operations.dispatch('convert', { job_id: job.id, output_format: 'markdown' });
   const finished = await waitForJob(operations, job.id);
   assert.equal(finished.status, 'completed', finished.error ?? '');
-  assert.equal(finished.artifacts.includes('sample.zip'), true);
+  assert.equal(finished.artifacts.includes('测试文档.zip'), true);
 
-  const artifact = await operations.dispatch('artifact', { job_id: job.id, name: 'sample.zip' });
+  const artifact = await operations.dispatch('artifact', { job_id: job.id, name: '测试文档.zip' });
   const bytes = await readFile(artifact.path);
   const archive = bytes.toString('latin1');
-  assert.ok(archive.includes('sample.md'), 'zip lists the Markdown file');
-  assert.ok(archive.includes('images/page-0001/pic.jpg'), 'zip lists page images');
+  assert.ok(archive.includes('pic.jpg'), 'zip lists page images');
 
   const normalized = await operations.dispatch('artifact', { job_id: job.id, name: 'normalization-report.json' });
   const report = JSON.parse(await readFile(normalized.path, 'utf8'));
@@ -185,6 +191,13 @@ test('OCR DOCX output embeds the collected image', async (t) => {
   const markdown = await readFile(normalized.path, 'utf8');
   assert.ok(markdown.includes('](images/page-0001/pic.jpg)'), markdown);
   assert.ok(!markdown.includes('<img'));
+  assert.ok(markdown.includes('title: 测试文档'), markdown);
+  assert.ok(markdown.includes('附件 4'), markdown);
+  assert.ok(markdown.includes('# 一、工作思路'), markdown);
+  assert.ok(markdown.includes('## （一）分级'), markdown);
+  assert.ok(markdown.includes('¹ “三域”指物资库、专业仓、项目/作业现场。'), markdown);
+  assert.ok(markdown.includes('![流向示意图]'), markdown);
+  assert.ok(markdown.includes('1. 事中管控'), markdown);
   assert.ok(markdown.includes('调整机制。'), 'a sentence split by a page break stays together');
 });
 

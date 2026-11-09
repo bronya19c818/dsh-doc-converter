@@ -67,11 +67,12 @@ class OcrState:
 
 @dataclass(frozen=True)
 class OcrResult:
-    """Collected page Markdown and the local image files it references."""
+    """Collected page Markdown, its local images, and the page header if any."""
 
     markdown: str
     pages: int
     images: list[str]
+    header: str | None = None
 
 
 def is_ocr_source(suffix: str) -> bool:
@@ -194,7 +195,7 @@ class PaddleOcr:
         if status != 200:
             raise OcrError(f"下载 OCR 结果失败（HTTP {status}）。")
         text = body.decode("utf-8", "replace")
-        items: list[tuple[str, dict[str, Any]]] = []
+        items: list[tuple[str, dict[str, Any], list[dict[str, Any]]]] = []
         for line in text.splitlines():
             line = line.strip()
             if not line:
@@ -205,18 +206,23 @@ class PaddleOcr:
                 raise OcrError("OCR 结果不是有效的 JSONL。") from error
             for item in result.get("layoutParsingResults") or []:
                 markdown = (item or {}).get("markdown") or {}
-                items.append((str(markdown.get("text") or ""), markdown.get("images") or {}))
+                blocks = ((item or {}).get("prunedResult") or {}).get("parsing_res_list") or []
+                items.append((str(markdown.get("text") or ""), markdown.get("images") or {}, blocks))
         if not items:
             raise OcrError("OCR 没有返回任何页面内容。")
         if len(items) > MAX_PAGES:
             raise OcrError("OCR 结果超过 1000 页上限。")
         pages: list[str] = []
         images: list[str] = []
-        for page_number, (page_text, page_images) in enumerate(items, start=1):
+        header: str | None = None
+        for page_number, (page_text, page_images, blocks) in enumerate(items, start=1):
+            if header is None:
+                header = _block_text(blocks, "header")
             mapping = self._download_images(page_images, job_directory, page_number)
             images.extend(mapping.values())
-            pages.append(_rewrite_images(page_text, mapping).strip())
-        return OcrResult(markdown=_join_pages(pages), pages=len(pages), images=images)
+            page = _rewrite_images(page_text, mapping).strip()
+            pages.append(_with_footnotes(page, blocks))
+        return OcrResult(markdown=_join_pages(pages), pages=len(pages), images=images, header=header)
 
     def _download_images(self, images: dict[str, Any], job_directory: Path,
                          page_number: int) -> dict[str, str]:
@@ -244,6 +250,40 @@ class PaddleOcr:
 
 def _hint(token: str) -> str:
     return f"…{token[-4:]}" if len(token) >= 4 else "…"
+
+
+def _block_text(blocks: list[dict[str, Any]], label: str) -> str | None:
+    for block in blocks:
+        if block.get("block_label") == label:
+            text = str(block.get("block_content") or "").strip()
+            if text:
+                return text
+    return None
+
+
+def _with_footnotes(page: str, blocks: list[dict[str, Any]]) -> str:
+    """Restore footnote bodies that the provider's Markdown rendering drops."""
+
+    notes = [str(block.get("block_content") or "").strip() for block in blocks
+             if block.get("block_label") == "footnote"]
+    notes = [note for note in notes if note]
+    if not notes:
+        return page
+    appended: list[str] = []
+    for index, note in enumerate(notes, start=1):
+        marker = _superscript(index)
+        pattern = re.compile(r"\s*\$\s*\^\s*\{?" + str(index) + r"\}?\s*\$")
+        page = pattern.sub(marker, page)
+        if note not in page:
+            appended.append(f"{marker} {note}")
+    if appended:
+        page = page.rstrip() + "\n\n" + "\n\n".join(appended)
+    return page
+
+
+def _superscript(number: int) -> str:
+    digits = str(number).translate(str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹"))
+    return digits
 
 
 def _join_pages(pages: list[str]) -> str:

@@ -22,6 +22,7 @@ from doc_converter.filename import safe_docx_filename, safe_stem
 from doc_converter.importers import import_document
 from doc_converter.importers.libreoffice import resolve_libreoffice
 from doc_converter.markdown_pipeline import normalize_plugin_markdown
+from doc_converter.ocr_structure import delivery_markdown, structure_ocr_markdown
 from doc_converter.paddle_ocr import MAX_IMAGE_BYTES, MAX_PAGES, MAX_UPLOAD_BYTES, OcrState, PaddleOcr, is_ocr_source
 from doc_converter.renderer import RendererError, render_docx
 from doc_converter.storage import atomic_write_text, data_child
@@ -384,8 +385,9 @@ class Application:
                          json_url=ocr.get("json_url")),
                 directory,
             )
-            atomic_write_text(directory / "work" / "source.md", result.markdown)
-            normalized = normalize_plugin_markdown(result.markdown, filename=job["source_name"])
+            structured = structure_ocr_markdown(result.markdown, result.header)
+            atomic_write_text(directory / "work" / "source.md", structured)
+            normalized = normalize_plugin_markdown(structured, filename=job["source_name"])
             if not normalized.report["integrity"]["passed"]:
                 raise ValueError("内容完整性校验失败，已阻止产物生成。")
             normalized.report["ocr"] = {"pages": result.pages}
@@ -397,7 +399,7 @@ class Application:
                 stem = safe_stem(normalized.metadata.get("title"), job["source_name"])
                 output_name = f"{stem}.zip"
                 self._write_markdown_zip(directory, output_name, stem,
-                                         normalized.markdown, result.images)
+                                         delivery_markdown(normalized.markdown), result.images)
                 artifacts = [output_name, "normalization-report.json"]
             else:
                 if not job.get("style_pack_id") or not job.get("style_pack_version"):
