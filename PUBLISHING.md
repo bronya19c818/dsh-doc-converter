@@ -33,7 +33,7 @@ npm publish --access public
 
 若账号启用了 2FA，`npm publish` 需要一次性验证码；用自动化发布时改用勾选「Bypass 2FA」的 granular access token，避免每次输入验证码。
 
-当前产物：65 个文件，含入口、`cordis.patch.yml`、`client.js`、`LICENSE`、51 个 Python 模块与锁定依赖清单。`0.1.10` 是首个发布版本，`0.1.13` 是当前版本。
+当前产物：67 个文件，含入口、`cordis.patch.yml`、`client.js`、`LICENSE`、53 个 Python 模块与锁定依赖清单。`0.1.10` 是首个发布版本，`0.2.0` 是当前版本。
 
 ## 发布后
 
