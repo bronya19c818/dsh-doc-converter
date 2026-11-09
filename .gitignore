@@ -5,3 +5,6 @@ artifacts/
 # 依赖与测试临时目录
 node_modules/
 .test-runs/
+
+# 浏览器验收产物
+.playwright-cli/

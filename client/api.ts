@@ -1,6 +1,6 @@
-import type { Dependencies, Job, RpcResponse, StylePack } from './types'
+import type { Dependencies, Job, OutputFormat, RpcResponse, StylePack, TokenStatus } from './types'
 
-export type { Dependencies, Job, StylePack } from './types'
+export type { Dependencies, Job, OutputFormat, StylePack, TokenStatus } from './types'
 
 const ROOT = '/api/dsh-doc-converter'
 
@@ -63,26 +63,45 @@ export function getDependencies(signal?: AbortSignal): Promise<Dependencies> {
   return rpc('dependencies', {}, signal)
 }
 
-export async function importFile(file: File, pack: StylePack, signal?: AbortSignal): Promise<Job> {
+export function saveToken(token: string): Promise<TokenStatus> {
+  return rpc('set_token', { token })
+}
+
+export function clearToken(): Promise<TokenStatus> {
+  return rpc('clear_token')
+}
+
+export async function importFile(file: File, pack: StylePack | null, outputFormat: OutputFormat, signal?: AbortSignal): Promise<Job> {
   const data = new FormData()
   data.append('file', file)
-  data.append('style_pack_id', pack.id)
-  data.append('style_pack_version', String(pack.version))
+  data.append('output_format', outputFormat)
+  if (pack) {
+    data.append('style_pack_id', pack.id)
+    data.append('style_pack_version', String(pack.version))
+  }
   return unwrap<Job>(await fetch(`${ROOT}/import`, {
     method: 'POST', credentials: 'same-origin', body: data, signal,
   }))
 }
 
-export function importPath(sourcePath: string, pack: StylePack): Promise<Job> {
+export function importPath(sourcePath: string, pack: StylePack | null, outputFormat: OutputFormat): Promise<Job> {
   return rpc('import_file', {
     source_path: sourcePath,
-    style_pack_id: pack.id,
-    style_pack_version: pack.version,
+    output_format: outputFormat,
+    ...(pack ? { style_pack_id: pack.id, style_pack_version: pack.version } : {}),
   })
 }
 
-export function convertJob(jobId: string, pack: StylePack): Promise<Job> {
-  return rpc('convert', { job_id: jobId, style_pack_id: pack.id, style_pack_version: pack.version })
+export function convertJob(jobId: string, pack: StylePack | null, outputFormat: OutputFormat): Promise<Job> {
+  return rpc('convert', {
+    job_id: jobId,
+    output_format: outputFormat,
+    ...(pack ? { style_pack_id: pack.id, style_pack_version: pack.version } : {}),
+  })
+}
+
+export function cancelJob(jobId: string): Promise<Job> {
+  return rpc('cancel', { job_id: jobId })
 }
 
 export function getJob(jobId: string, signal?: AbortSignal): Promise<Job> {

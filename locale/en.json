@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Document Converter",
-    "description": "Convert Markdown, DOCX and DOC into styled DOCX with versioned styles and conversion audits."
+    "description": "Convert Markdown, DOCX, DOC, images and PDF into styled DOCX or Markdown with conversion audits."
   }
 }

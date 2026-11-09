@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -17,14 +18,18 @@ from uuid import uuid4
 
 from doc_converter.docx_direct import analyze_docx, normalize_docx_direct
 from doc_converter.docx_direct.audit import AUDIT_FILENAMES
-from doc_converter.filename import safe_docx_filename
+from doc_converter.filename import safe_docx_filename, safe_stem
 from doc_converter.importers import import_document
 from doc_converter.importers.libreoffice import resolve_libreoffice
 from doc_converter.markdown_pipeline import normalize_plugin_markdown
+from doc_converter.paddle_ocr import MAX_IMAGE_BYTES, MAX_PAGES, MAX_UPLOAD_BYTES, OcrState, PaddleOcr, is_ocr_source
 from doc_converter.renderer import RendererError, render_docx
 from doc_converter.storage import atomic_write_text, data_child
 from doc_converter.style_library import StyleLibrary, StylePack, create_style_pack
 from doc_converter.style_schema import migrate_roles
+
+OCR_OUTPUT_FORMATS = {"markdown", "docx"}
+DOCUMENT_SUFFIXES = {".docx", ".md", ".markdown", ".doc"}
 
 
 class Application:
@@ -36,6 +41,7 @@ class Application:
         self._jobs_root = data_child(self.data_root, "jobs")
         data_child(self.data_root, "style-packs")
         self._styles = StyleLibrary(self.data_root)
+        self._ocr = PaddleOcr(self.data_root)
         self._lock = RLock()
 
     def dispatch(self, action: str, params: dict[str, Any]) -> Any:
@@ -53,6 +59,14 @@ class Application:
             "convert": self._convert,
             "get_job": self._get_job,
             "artifact": self._artifact,
+            "ocr_submit": self._ocr_submit,
+            "ocr_poll": self._ocr_poll,
+            "ocr_collect": self._ocr_collect,
+            "ocr_cancel": self._ocr_cancel,
+            "ocr_fail": self._ocr_fail,
+            "token_status": self._token_status,
+            "set_token": self._set_token,
+            "clear_token": self._clear_token,
         }
         if action not in handlers:
             raise ValueError(f"不支持的操作：{action}")
@@ -66,6 +80,7 @@ class Application:
             "python": {"available": True, "version": sys.version.split()[0],
                        "executable": sys.executable},
             "pandoc": pandoc, "libreoffice": libreoffice,
+            "ocr": self._ocr.token_status(),
             "capabilities": {"docx": True, "markdown": pandoc["available"],
                              "doc": pandoc["available"] and libreoffice["available"]},
         }
@@ -221,9 +236,19 @@ class Application:
             raise ValueError("source_path 必须指向已存在文件的绝对路径。")
         source = source.resolve()
         suffix = source.suffix.lower()
-        if suffix not in {".docx", ".md", ".markdown", ".doc"}:
-            raise ValueError("当前支持 .md、.markdown、.docx 和 .doc 文件。")
-        style = self._selected_style(params)
+        if suffix not in DOCUMENT_SUFFIXES and not is_ocr_source(suffix):
+            raise ValueError("当前支持 .md、.markdown、.docx、.doc、图片和 PDF 文件。")
+        output_format = self._output_format(params.get("output_format"))
+        ocr = is_ocr_source(suffix)
+        if not ocr and output_format != "docx":
+            raise ValueError("只有图片或 PDF 可以输出 Markdown。")
+        if ocr:
+            size = source.stat().st_size
+            if size > MAX_UPLOAD_BYTES:
+                raise ValueError("图片或 PDF 超过 50 MB 上限，无法提交 OCR。")
+            if suffix != ".pdf" and size > MAX_IMAGE_BYTES:
+                raise ValueError("单张图片超过 10 MB 上限，无法提交 OCR。")
+        style = self._selected_style(params) if output_format == "docx" else None
         if suffix == ".docx":
             analyze_docx(source)
         job_id = str(uuid4())
@@ -233,18 +258,22 @@ class Application:
         snapshot = directory / "source" / source.name
         shutil.copyfile(source, snapshot)
         warnings: list[str] = []
-        if suffix != ".docx":
+        if not ocr and suffix != ".docx":
             imported = import_document(snapshot, job_directory=directory)
             markdown = imported.markdown.replace("\r\n", "\n").replace("\r", "\n")
             atomic_write_text(directory / "work" / "source.md", markdown)
             warnings = imported.warnings
         job = {
             "id": job_id, "status": "ready", "source_name": source.name,
-            "source_format": "markdown" if suffix in {".md", ".markdown"} else suffix[1:],
-            "conversion_mode": "docx-direct" if suffix == ".docx" else "round-trip",
-            "style_pack_id": style.id, "style_pack_version": style.version,
+            "source_format": ("pdf" if suffix == ".pdf" else "image") if ocr else
+                             ("markdown" if suffix in {".md", ".markdown"} else suffix[1:]),
+            "output_format": output_format,
+            "conversion_mode": "ocr" if ocr else
+                               ("docx-direct" if suffix == ".docx" else "round-trip"),
+            "style_pack_id": style.id if style else None,
+            "style_pack_version": style.version if style else None,
             "artifacts": [], "output_name": None, "error": None,
-            "import_warnings": warnings,
+            "ocr": None, "import_warnings": warnings,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         self._save_job(job)
@@ -252,6 +281,8 @@ class Application:
 
     def _convert(self, params: dict[str, Any]) -> dict[str, Any]:
         job = self._get_job(params)
+        if job["conversion_mode"] == "ocr":
+            return self._ocr_submit(params)
         selected = {
             "style_pack_id": params.get("style_pack_id", job["style_pack_id"]),
             "style_pack_version": params.get("style_pack_version", job["style_pack_version"]),
@@ -299,6 +330,148 @@ class Application:
         self._save_job(job)
         return job
 
+    def _ocr_submit(self, params: dict[str, Any]) -> dict[str, Any]:
+        job = self._get_job(params)
+        if job["conversion_mode"] != "ocr":
+            raise ValueError("该任务不是 OCR 任务。")
+        if job["status"] in {"running", "completed", "cancelled"}:
+            return job
+        directory = self._job_directory(job["id"])
+        cloud_id = self._ocr.submit(directory / "source" / job["source_name"])
+        job.update({
+            "status": "running", "error": None,
+            "ocr": {"job_id": cloud_id, "state": "pending", "total_pages": None,
+                    "extracted_pages": None, "pages": None, "json_url": None, "error": None},
+        })
+        self._save_job(job)
+        return job
+
+    def _ocr_poll(self, params: dict[str, Any]) -> dict[str, Any]:
+        job = self._get_job(params)
+        ocr = job.get("ocr") or {}
+        if job["status"] != "running" or not ocr.get("job_id"):
+            return job
+        state = self._ocr.poll(str(ocr["job_id"]))
+        ocr.update({
+            "state": state.state, "total_pages": state.total_pages,
+            "extracted_pages": state.extracted_pages, "json_url": state.json_url,
+        })
+        if state.state == "failed":
+            ocr["error"] = state.error or "OCR 任务失败。"
+            job.update({"status": "failed", "error": ocr["error"]})
+        elif state.state == "done" and state.total_pages and state.total_pages > MAX_PAGES:
+            ocr["error"] = "PDF 页数超过 1000 页上限，已停止收集。"
+            job.update({"status": "failed", "error": ocr["error"]})
+        elif state.state == "done":
+            ocr["state"] = "done"
+        self._save_job(job)
+        return job
+
+    def _ocr_collect(self, params: dict[str, Any]) -> dict[str, Any]:
+        job = self._get_job(params)
+        if job["conversion_mode"] != "ocr":
+            raise ValueError("该任务不是 OCR 任务。")
+        if job["status"] != "running":
+            return job
+        ocr = job.get("ocr") or {}
+        if ocr.get("state") != "done":
+            raise ValueError("OCR 任务尚未完成。")
+        directory = self._job_directory(job["id"])
+        try:
+            result = self._ocr.collect(
+                OcrState(state="done", total_pages=ocr.get("total_pages"),
+                         extracted_pages=ocr.get("extracted_pages"), error=None,
+                         json_url=ocr.get("json_url")),
+                directory,
+            )
+            atomic_write_text(directory / "work" / "source.md", result.markdown)
+            normalized = normalize_plugin_markdown(result.markdown, filename=job["source_name"])
+            if not normalized.report["integrity"]["passed"]:
+                raise ValueError("内容完整性校验失败，已阻止产物生成。")
+            normalized.report["ocr"] = {"pages": result.pages}
+            atomic_write_text(directory / "document.normalized.md", normalized.markdown)
+            atomic_write_text(directory / "normalization-report.json", json.dumps(
+                normalized.report, ensure_ascii=False, indent=2,
+            ))
+            if job.get("output_format") == "markdown":
+                stem = safe_stem(normalized.metadata.get("title"), job["source_name"])
+                output_name = f"{stem}.zip"
+                self._write_markdown_zip(directory, output_name, stem,
+                                         normalized.markdown, result.images)
+                artifacts = [output_name, "normalization-report.json"]
+            else:
+                if not job.get("style_pack_id") or not job.get("style_pack_version"):
+                    raise ValueError("DOCX 输出需要样式预设。")
+                style = self._styles.get(job["style_pack_id"], job["style_pack_version"])
+                output_name = safe_docx_filename(normalized.metadata.get("title"), job["source_name"])
+                inline_audit: dict[str, Any] = {}
+                render_docx(
+                    markdown=normalized.markdown, style_pack=style,
+                    output_path=directory / output_name, work_dir=directory / "work",
+                    pandoc_path=self._system_pandoc(), metadata_final=True,
+                    audit=inline_audit,
+                )
+                if inline_audit:
+                    normalized.report.update(inline_audit)
+                atomic_write_text(directory / "normalization-report.json", json.dumps(
+                    normalized.report, ensure_ascii=False, indent=2,
+                ))
+                atomic_write_text(directory / "style-pack.snapshot.json",
+                                  style.model_dump_json(indent=2))
+                artifacts = [output_name, "document.normalized.md",
+                             "normalization-report.json", "style-pack.snapshot.json"]
+            job["ocr"] = {**(job.get("ocr") or {}), "pages": result.pages, "images": len(result.images)}
+            job.update({"status": "completed", "output_name": output_name,
+                        "error": None, "artifacts": artifacts})
+        except Exception as error:
+            job.update({"status": "failed", "error": str(error)})
+        self._save_job(job)
+        return job
+
+    def _ocr_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
+        job = self._get_job(params)
+        if job["conversion_mode"] != "ocr":
+            return job
+        force = bool(params.get("force"))
+        cancellable = job["status"] in {"ready", "running"} or (
+            force and job["status"] in {"completed", "failed"}
+        )
+        if cancellable:
+            ocr = job.get("ocr") or {}
+            if ocr:
+                ocr["state"] = "cancelled"
+                job["ocr"] = ocr
+            job.update({"status": "cancelled", "error": None})
+            self._save_job(job)
+        return job
+
+    def _ocr_fail(self, params: dict[str, Any]) -> dict[str, Any]:
+        job = self._get_job(params)
+        if job["status"] == "running":
+            message = str(params.get("message") or "OCR 任务失败。")
+            job.update({"status": "failed", "error": message})
+            self._save_job(job)
+        return job
+
+    def _token_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._ocr.token_status()
+
+    def _set_token(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._ocr.set_token(str(params.get("token", "")))
+
+    def _clear_token(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._ocr.clear_token()
+
+    @staticmethod
+    def _write_markdown_zip(directory: Path, output_name: str, stem: str,
+                            markdown: str, images: list[str]) -> None:
+        with zipfile.ZipFile(directory / output_name, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(f"{stem}.md", markdown)
+            for relative in images:
+                path = directory / relative
+                if path.is_file():
+                    archive.write(path, relative)
+
     def _get_job(self, params: dict[str, Any]) -> dict[str, Any]:
         directory = self._job_directory(str(params.get("job_id", "")))
         job = json.loads((directory / "job.json").read_text(encoding="utf-8"))
@@ -338,6 +511,14 @@ class Application:
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError("样式版本必须为正整数。")
         return value
+
+    @staticmethod
+    def _output_format(value: Any) -> str:
+        if value in {None, ""}:
+            return "docx"
+        if value not in OCR_OUTPUT_FORMATS:
+            raise ValueError("输出格式只能是 markdown 或 docx。")
+        return str(value)
 
     @staticmethod
     def _name(value: Any) -> str:

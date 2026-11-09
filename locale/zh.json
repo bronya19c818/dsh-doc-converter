@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "文档转换",
-    "description": "导入 Markdown、DOCX 或 DOC，按版本化样式自动生成 DOCX，并保留转换审计。"
+    "description": "导入 Markdown、DOCX、DOC、图片或 PDF，生成带样式的 DOCX 或 Markdown，并保留转换审计。"
   }
 }

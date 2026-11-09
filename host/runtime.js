@@ -6,6 +6,8 @@ import { createInterface } from 'node:readline';
 const ACTIONS = new Set([
   'dependencies', 'list_styles', 'create_style', 'revise_style', 'import_file',
   'convert', 'get_job', 'artifact', 'migrate_styles', 'delete_style',
+  'ocr_submit', 'ocr_poll', 'ocr_collect', 'ocr_cancel', 'ocr_fail',
+  'token_status', 'set_token', 'clear_token', 'cancel',
 ]);
 
 /**
@@ -120,14 +122,14 @@ export class WorkerClient {
     return this.#starting;
   }
 
-  async call(action, params = {}) {
+  async call(action, params = {}, timeoutMs = this.timeoutMs) {
     const handle = await this.#start();
     if (this.#closed || this.#handle !== handle || this.#stopping) throw new Error('文档转换工作进程已停止。');
     const id = randomUUID();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.#handle === handle) void this.#stop(new Error('转换工作进程超时，已停止本次处理。请检查文档或外部程序后重试。')).catch(() => {});
-      }, this.timeoutMs);
+      }, timeoutMs);
       this.#pending.set(id, { resolve, reject, timer });
       handle.stdin.write(`${JSON.stringify({ id, action, params })}\n`, 'utf8', (error) => {
         if (error && this.#handle === handle) void this.#stop(error).catch(() => {});
@@ -183,13 +185,24 @@ export class ConverterOperations {
     if (!ACTIONS.has(action)) throw new Error(`不支持的文档转换操作：${action}`);
     if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error('操作参数必须为对象。');
     if (action === 'get_job' && this.#jobs.has(params.job_id)) return this.#jobs.get(params.job_id).job;
+    if (action === 'cancel') return this.#cancel(params);
     if (action === 'convert') {
       const current = this.#jobs.get(params.job_id);
       if (current?.job.status === 'running') return current.job;
       if (this.#active) throw new Error('另一份文档正在转换，请完成后再开始。');
       this.#active = params.job_id;
       try {
-        const job = { ...await this.worker.call('get_job', { job_id: params.job_id }), status: 'running', error: null };
+        const existing = await this.worker.call('get_job', { job_id: params.job_id });
+        if (existing.conversion_mode === 'ocr' && existing.status === 'completed') return existing;
+        if (existing.conversion_mode === 'ocr') {
+          const job = await this.worker.call('ocr_submit', { job_id: params.job_id });
+          const state = { job, cancelled: false };
+          this.#jobs.set(params.job_id, state);
+          state.done = this.#runOcr(params.job_id, state)
+            .finally(() => { this.#active = undefined; });
+          return job;
+        }
+        const job = { ...existing, status: 'running', error: null };
         const state = { job };
         this.#jobs.set(params.job_id, state);
         state.done = this.worker.call('convert', params).then((result) => {
@@ -206,17 +219,79 @@ export class ConverterOperations {
     return this.worker.call(action, params);
   }
 
-  async importBytes({ name, bytes, style_pack_id, style_pack_version }) {
+  /** Poll a cloud OCR job without occupying the Python worker between checks. */
+  async #runOcr(jobId, state) {
+    try {
+      await this.#pollOcr(jobId, state);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      state.job = { ...state.job, status: 'failed', error: message };
+      try { await this.worker.call('ocr_fail', { job_id: jobId, message }); } catch { /* worker is gone */ }
+    }
+  }
+
+  async #pollOcr(jobId, state) {
+    let failures = 0;
+    while (!state.cancelled) {
+      let next;
+      try {
+        next = await this.worker.call('ocr_poll', { job_id: jobId });
+        failures = 0;
+      } catch (error) {
+        failures += 1;
+        if (failures >= 3) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 2000 * failures));
+        continue;
+      }
+      if (state.cancelled) return;
+      state.job = next;
+      if (next.status !== 'running') return;
+      if (next.ocr?.state === 'done') {
+        const finished = await this.worker.call('ocr_collect', { job_id: jobId }, 3_600_000);
+        if (state.cancelled) {
+          // Results finished arriving after the user cancelled: keep the
+          // stopped task visible as cancelled and drop the ready artifacts.
+          await this.worker.call('ocr_cancel', { job_id: jobId, force: true });
+          state.job = { ...finished, status: 'cancelled', error: null };
+          return;
+        }
+        state.job = finished;
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+  }
+
+  async #cancel(params) {
+    const state = this.#jobs.get(params.job_id);
+    if (state && state.job?.status === 'running') {
+      // Answer at once: the worker may be busy collecting results, and the
+      // user should not wait for that work before seeing the task stopped.
+      state.cancelled = true;
+      state.job = { ...state.job, status: 'cancelled', error: null };
+      void this.worker.call('ocr_cancel', { job_id: params.job_id }).catch(() => {});
+      return state.job;
+    }
+    const job = await this.worker.call('ocr_cancel', { job_id: params.job_id });
+    if (state) state.job = job;
+    return job;
+  }
+
+  async importBytes({ name, bytes, style_pack_id, style_pack_version, output_format }) {
     if (!this.dataRoot) throw new Error('未配置文档转换数据目录。');
-    if (!bytes.length || bytes.length > 64 * 1024 * 1024) throw new Error('文件为空或超过 64 MiB。');
     const fileName = path.basename(name.replaceAll('\\', '/'));
-    if (!/\.(md|markdown|docx|doc)$/i.test(fileName)) throw new Error('请选择 Markdown、DOCX 或 DOC 文件。');
+    const ocr = /\.(png|jpe?g|bmp|tiff?|webp|pdf)$/i.test(fileName);
+    if (!ocr && !/\.(md|markdown|docx|doc)$/i.test(fileName)) {
+      throw new Error('请选择 Markdown、DOCX、DOC、图片或 PDF 文件。');
+    }
+    const limit = (ocr ? 50 : 64) * 1024 * 1024;
+    if (!bytes.length || bytes.length > limit) throw new Error(`文件为空或超过 ${ocr ? 50 : 64} MB。`);
     const directory = path.join(this.dataRoot, 'incoming', randomUUID());
     await mkdir(directory, { recursive: true });
     const source = path.join(directory, fileName);
     try {
       await writeFile(source, bytes, { flag: 'wx' });
-      return await this.worker.call('import_file', { source_path: source, style_pack_id, style_pack_version });
+      return await this.worker.call('import_file', { source_path: source, style_pack_id, style_pack_version, output_format });
     } finally {
       // Only the unique staging directory created above is removed; jobs own a source copy.
       await rm(directory, { recursive: true, force: true });

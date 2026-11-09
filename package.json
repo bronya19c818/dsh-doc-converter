@@ -1,7 +1,7 @@
 {
   "name": "dsh-doc-converter",
-  "version": "0.1.13",
-  "description": "Local, AI-free document conversion for DeepSeek Harness with versioned DOCX styles",
+  "version": "0.2.0",
+  "description": "Local document conversion for DeepSeek Harness with versioned DOCX styles, normalized Markdown, and PaddleOCR for images and PDF",
   "keywords": [
     "dsh-plugin",
     "dsh",
@@ -9,6 +9,8 @@
     "docx",
     "markdown",
     "document-conversion",
+    "ocr",
+    "pdf",
     "styles"
   ],
   "license": "MIT",

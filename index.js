@@ -67,8 +67,9 @@ export async function apply(ctx, config = {}) {
         const file = form.get('file');
         if (!file || typeof file === 'string') throw new Error('请选择一个文件。');
         const result = await operations.importBytes({ name: file.name,
-          bytes: Buffer.from(await file.arrayBuffer()), style_pack_id: form.get('style_pack_id'),
-          style_pack_version: Number(form.get('style_pack_version')) });
+          bytes: Buffer.from(await file.arrayBuffer()), style_pack_id: form.get('style_pack_id') || null,
+          style_pack_version: form.get('style_pack_version') ? Number(form.get('style_pack_version')) : null,
+          output_format: form.get('output_format') || 'docx' });
         json(res, 200, { ok: true, result });
       } else if (req.method === 'GET' && url.pathname === `${PREFIX}/artifact`) {
         const artifact = await operations.dispatch('artifact', {
@@ -90,14 +91,15 @@ export async function apply(ctx, config = {}) {
 
   ctx.effect(() => ctx.tools.register({
     name: 'doc_converter',
-    description: 'Convert a local Markdown, DOCX or DOC file to styled DOCX, manage immutable styles, and retrieve registered results. Convert starts a job; inspect get_job until completed or failed.',
+    description: 'Convert a local Markdown, DOCX, DOC, image or PDF file to styled DOCX or Markdown, manage immutable styles, and retrieve registered results. Image and PDF inputs use OCR; choose output_format markdown or docx. Convert starts a job; inspect get_job until completed, failed or cancelled.',
     parameters: { type: 'object', properties: {
-      action: { type: 'string', enum: ['dependencies', 'list_styles', 'create_style', 'revise_style', 'import_file', 'convert', 'get_job', 'artifact', 'migrate_styles', 'delete_style'] },
-      source_path: { type: 'string', description: 'Absolute execution-host file path for import_file.' },
+      action: { type: 'string', enum: ['dependencies', 'list_styles', 'create_style', 'revise_style', 'import_file', 'convert', 'get_job', 'artifact', 'cancel', 'migrate_styles', 'delete_style'] },
+      source_path: { type: 'string', description: 'Absolute execution-host file path for import_file; Markdown, DOCX, DOC, image or PDF.' },
       source_root: { type: 'string', description: 'Existing application data root or style-packs directory for migrate_styles; only current effective versions are copied.' },
-      style_pack_id: { type: 'string', description: 'Style identity for import_file; optional override for convert.' },
+      style_pack_id: { type: 'string', description: 'Style identity for import_file; optional override for convert; required for docx output.' },
       style_pack_version: { type: 'integer', description: 'Existing immutable style version, paired with style_pack_id.' },
-      job_id: { type: 'string', description: 'Job identity for convert, get_job or artifact.' },
+      output_format: { type: 'string', enum: ['markdown', 'docx'], description: 'Output for image or PDF inputs; defaults to docx. Document inputs always produce docx.' },
+      job_id: { type: 'string', description: 'Job identity for convert, get_job, cancel or artifact.' },
       name: { type: 'string', description: 'Style name for create/revise, or registered filename for artifact.' },
       id: { type: 'string', description: 'Style identity for revise_style or delete_style.' },
       base_version: { type: 'integer', description: 'Version being edited for revise_style; a newer revision is never overwritten.' },
