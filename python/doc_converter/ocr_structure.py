@@ -12,6 +12,7 @@ _PAREN_ORDINAL = re.compile(r"^[（(][^）)]+[）)]")
 _ORDERED_ITEM = re.compile(r"^(\s*)(\d+)[.、)]\s*(.*)$")
 _IMAGE_LINE = re.compile(r"^\s*!\[([^\]]*)\]\(([^)\s]+)\)\s*$")
 _HEADER_ATTACHMENT = re.compile(r"^附件\s*(\d+)$")
+_MATH_SUPERSCRIPT = re.compile(r"\s*\$\s*\^\s*\{?\s*(\d+)\s*\}?\s*\$\s*")
 
 
 def structure_ocr_markdown(markdown: str, header: str | None = None) -> str:
@@ -28,6 +29,8 @@ def structure_ocr_markdown(markdown: str, header: str | None = None) -> str:
     existing_title = existing.strip() if isinstance(existing, str) and existing.strip() else None
     lines = body_text.split("\n")
     title, title_index = _take_title(lines)
+    if title:
+        title = _plain_superscripts(title)
     if title_index is not None:
         del lines[title_index]
     lines = _demote_figure_titles(lines)
@@ -63,7 +66,7 @@ def _split_front_matter(markdown: str) -> tuple[str, str]:
 
 
 def delivery_markdown(markdown: str) -> str:
-    """Remove the plugin's schema marker and title from a user-facing Markdown file."""
+    """Remove the plugin's schema marker, keeping the title as the first heading."""
 
     lines = markdown.replace("\r\n", "\n").split("\n")
     if not lines or lines[0].strip() != "---":
@@ -72,12 +75,37 @@ def delivery_markdown(markdown: str) -> str:
                     if line.strip() == "---"), None)
     if closing is None:
         return markdown
+    try:
+        front = yaml.safe_load("\n".join(lines[1:closing])) or {}
+    except yaml.YAMLError:
+        front = {}
+    title = front.get("title") if isinstance(front, dict) else None
+    title = title.strip() if isinstance(title, str) and title.strip() else None
     metadata = [line for line in lines[1:closing]
                 if not line.lstrip().startswith(("schema:", "title:"))]
     body = "\n".join(lines[closing + 1:]).lstrip("\n")
+    if title:
+        first_heading = next((line for line in body.split("\n") if line.strip()), "")
+        if first_heading.strip() != f"# {title}":
+            existing = any(
+                (match := _HEADING.match(line)) and match.group(1) == "#"
+                and match.group(2).strip() == title
+                for line in body.split("\n")
+            )
+            if not existing:
+                body = f"# {title}\n\n{body}" if body else f"# {title}"
     if not any(line.strip() for line in metadata):
         return body
     return "\n".join(["---", *metadata, "---", body])
+
+
+def _plain_superscripts(text: str) -> str:
+    """Render OCR's ``$ ^{1} $`` title marker as the printed ``¹``."""
+
+    return _MATH_SUPERSCRIPT.sub(
+        lambda match: match.group(1).translate(str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")),
+        text,
+    )
 
 
 def _take_title(lines: list[str]) -> tuple[str | None, int | None]:

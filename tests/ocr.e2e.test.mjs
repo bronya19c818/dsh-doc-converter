@@ -190,7 +190,8 @@ test('OCR markdown delivery is a zip of normalized Markdown and local images', a
   assert.ok(archive.includes('pic.jpg'), 'zip lists page images');
 
   const delivered = await readArchiveMarkdown(artifact.path);
-  assert.ok(delivered.startsWith('附件 4\n\n正文内容¹。\n\n流向示意图\n'), delivered.slice(0, 80));
+  assert.ok(delivered.startsWith('# 测试文档\n\n附件 4\n\n正文内容¹。\n\n流向示意图\n'), delivered.slice(0, 120));
+  assert.ok(!delivered.includes('title:'), delivered.slice(0, 120));
   assert.ok(!delivered.includes('title:'), delivered.slice(0, 160));
 
   const normalized = await operations.dispatch('artifact', { job_id: job.id, name: 'normalization-report.json' });
