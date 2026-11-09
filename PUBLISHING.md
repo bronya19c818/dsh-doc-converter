@@ -25,10 +25,20 @@ npm run pack:check
 
 ## 发布
 
-```bash
-npm login
-npm view dsh-doc-converter version   # 404 表示名称可用
-npm publish --access public
+已上架版本的日常发布走一键脚本，它串起预检、CNB 发布、推代码、网关验证和市场清单同步：
+
+```powershell
+.\scripts\release.ps1 -BumpVersion patch
+.\scripts\release.ps1 -Version 0.2.1
+```
+
+测试码放在 `~/.dsh/release-test-keys.json`，脚本默认读取，不在仓库里保存。只补验证或清单时加 `-SkipPublish -SkipGit`；只同步清单时单独跑 `~/.agents/skills/cnb-licensed-plugin-dist/scripts/sync-market.ps1`。
+
+手工发布（只发制品，不跑验证和清单）：
+
+```powershell
+& "$HOME\.agents\skills\cnb-private-npm-publish\scripts\publish-to-cnb-npm.ps1" `
+    -Slug bronya.cloud/dsh-si-sync-brand -Path . -BumpVersion patch
 ```
 
 若账号启用了 2FA，`npm publish` 需要一次性验证码；用自动化发布时改用勾选「Bypass 2FA」的 granular access token，避免每次输入验证码。
