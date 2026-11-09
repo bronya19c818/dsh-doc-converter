@@ -15,7 +15,7 @@ _HEADER_ATTACHMENT = re.compile(r"^附件\s*(\d+)$")
 
 
 def structure_ocr_markdown(markdown: str, header: str | None = None) -> str:
-    """Turn OCR's flat headings and loose blocks into a title plus a heading outline."""
+    """Turn OCR's flat headings and loose blocks into a Markdown heading outline."""
 
     metadata_text, body_text = _split_front_matter(markdown)
     try:
@@ -24,6 +24,8 @@ def structure_ocr_markdown(markdown: str, header: str | None = None) -> str:
         metadata = {}
     if not isinstance(metadata, dict):
         metadata = {}
+    existing = metadata.get("title")
+    existing_title = existing.strip() if isinstance(existing, str) and existing.strip() else None
     lines = body_text.split("\n")
     title, title_index = _take_title(lines)
     if title_index is not None:
@@ -37,11 +39,16 @@ def structure_ocr_markdown(markdown: str, header: str | None = None) -> str:
     if attach:
         body = f"{attach}\n\n{body}" if body else attach
     if title:
-        metadata["title"] = title
-    if not metadata:
-        return f"{body}\n" if body else ""
-    front = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).strip()
-    return f"---\n{front}\n---\n\n{body}\n"
+        body = f"# {title}\n\n{body}" if body else f"# {title}"
+    elif existing_title:
+        # A source front matter with only a title keeps it as the first heading.
+        body = f"# {existing_title}\n\n{body}" if body else f"# {existing_title}"
+    if existing_title and existing_title != title:
+        # The shared normalization reads a front-matter title when deciding the
+        # document title role; it is removed again for the delivered Markdown.
+        front = yaml.safe_dump({"title": existing_title}, allow_unicode=True, sort_keys=False).strip()
+        return f"---\n{front}\n---\n\n{body}\n"
+    return f"{body}\n" if body else ""
 
 
 def _split_front_matter(markdown: str) -> tuple[str, str]:
@@ -56,7 +63,7 @@ def _split_front_matter(markdown: str) -> tuple[str, str]:
 
 
 def delivery_markdown(markdown: str) -> str:
-    """Drop the plugin's internal schema marker from a user-facing Markdown file."""
+    """Remove the plugin's schema marker and title from a user-facing Markdown file."""
 
     lines = markdown.replace("\r\n", "\n").split("\n")
     if not lines or lines[0].strip() != "---":
@@ -65,16 +72,24 @@ def delivery_markdown(markdown: str) -> str:
                     if line.strip() == "---"), None)
     if closing is None:
         return markdown
-    metadata = [line for line in lines[1:closing] if not line.lstrip().startswith("schema:")]
+    metadata = [line for line in lines[1:closing]
+                if not line.lstrip().startswith(("schema:", "title:"))]
+    body = "\n".join(lines[closing + 1:]).lstrip("\n")
     if not any(line.strip() for line in metadata):
-        return "\n".join(lines[closing + 1:]).lstrip("\n")
-    return "\n".join(["---", *metadata, "---", *lines[closing + 1:]])
+        return body
+    return "\n".join(["---", *metadata, "---", body])
 
 
 def _take_title(lines: list[str]) -> tuple[str | None, int | None]:
     index = _next_content(lines, 0)
     if index is None:
         return None, None
+    attachment = _HEADER_ATTACHMENT.match(lines[index].strip())
+    if attachment:
+        # The attachment label sits above the title; the first heading is the title.
+        index = _next_content(lines, index + 1)
+        if index is None:
+            return None, None
     heading = _HEADING.match(lines[index])
     if not heading:
         return None, None

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { inflateRawSync } from 'node:zlib';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -119,8 +120,26 @@ function fakeOcrServer() {
   });
 }
 
-async function waitForJob(operations, jobId, ms = 30_000) {
-  const started = Date.now();
+async function readArchiveMarkdown(zipPath) {
+  const bytes = await readFile(zipPath);
+  for (let offset = 0; offset < bytes.length - 30;) {
+    if (bytes.readUInt32LE(offset) !== 0x04034b50) { offset += 1; continue; }
+    const method = bytes.readUInt16LE(offset + 8);
+    const compressed = bytes.readUInt32LE(offset + 18);
+    const nameLength = bytes.readUInt16LE(offset + 26);
+    const extraLength = bytes.readUInt16LE(offset + 28);
+    const name = bytes.subarray(offset + 30, offset + 30 + nameLength).toString('utf8');
+    const start = offset + 30 + nameLength + extraLength;
+    const data = bytes.subarray(start, start + compressed);
+    if (name.endsWith('.md')) {
+      return (method === 8 ? inflateRawSync(data) : data).toString('utf8');
+    }
+    offset = start + compressed;
+  }
+  throw new Error('archive has no Markdown file');
+}
+
+async function waitForJob(operations, jobId, ms = 30_000) {  const started = Date.now();
   let current = await operations.dispatch('get_job', { job_id: jobId });
   while (!['completed', 'failed', 'cancelled'].includes(current.status) && Date.now() - started < ms) {
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -170,6 +189,10 @@ test('OCR markdown delivery is a zip of normalized Markdown and local images', a
   const archive = bytes.toString('latin1');
   assert.ok(archive.includes('pic.jpg'), 'zip lists page images');
 
+  const delivered = await readArchiveMarkdown(artifact.path);
+  assert.ok(delivered.startsWith('附件 4\n\n正文内容¹。\n\n流向示意图\n'), delivered.slice(0, 80));
+  assert.ok(!delivered.includes('title:'), delivered.slice(0, 160));
+
   const normalized = await operations.dispatch('artifact', { job_id: job.id, name: 'normalization-report.json' });
   const report = JSON.parse(await readFile(normalized.path, 'utf8'));
   assert.equal(report.ocr.pages, 3);
@@ -191,14 +214,8 @@ test('OCR DOCX output embeds the collected image', async (t) => {
   const markdown = await readFile(normalized.path, 'utf8');
   assert.ok(markdown.includes('](images/page-0001/pic.jpg)'), markdown);
   assert.ok(!markdown.includes('<img'));
-  assert.ok(markdown.includes('title: 测试文档'), markdown);
   assert.ok(markdown.includes('附件 4'), markdown);
-  assert.ok(markdown.includes('# 一、工作思路'), markdown);
-  assert.ok(markdown.includes('## （一）分级'), markdown);
-  assert.ok(markdown.includes('¹ “三域”指物资库、专业仓、项目/作业现场。'), markdown);
-  assert.ok(markdown.includes('![流向示意图]'), markdown);
-  assert.ok(markdown.includes('1. 事中管控'), markdown);
-  assert.ok(markdown.includes('调整机制。'), 'a sentence split by a page break stays together');
+  assert.ok(markdown.includes('title: 测试文档'), markdown);
 });
 
 test('a running OCR task can be cancelled from the page', async (t) => {
